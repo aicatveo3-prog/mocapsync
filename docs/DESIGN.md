@@ -107,6 +107,26 @@ offset = ((t2 - t1) + (t3 - t4)) / 2
 
 ---
 
+## 3.9 실측으로 확인된 환경 제약 (2026-09-17)
+
+이 프로젝트에서 두 번 물린 함정입니다. 둘 다 같은 뿌리(**경로에 한글이 있으면 C++ 툴체인이 깨진다**)입니다.
+
+| 대상 | 증상 | 우회 |
+| --- | --- | --- |
+| **Android Gradle Plugin** | `Your project path contains non-ASCII characters` 로 빌드 거부 | ASCII 경로 디렉터리 정션(`mklink /J`)에서 빌드. **정션이 통합니다.** CI(리눅스)는 무관 |
+| **OpenSim 4.6 (C++ 코어)** | `Cannot open file ..._scaling_setup.xml` (파일은 실제로 존재함). `Pose2Sim.kinematics()` 에서만 터짐 | **정션으로 우회 안 됩니다** — Pose2Sim 이 경로를 `resolve()` 해서 원래 경로로 되돌립니다. 작업 폴더 자체를 ASCII 경로로 둬야 합니다 |
+
+검증 방법: 동일 프로젝트를 ASCII 경로로 복사해 `kinematics` 만 재실행 → `.mot` / `.osim` 정상 생성.
+
+### 4단계 설계에 주는 결론
+
+PC 파이프라인은 **세션 작업 폴더를 항상 ASCII 경로에 만들어야 합니다.**
+코드는 리포에, 데이터는 ASCII 경로에 두는 분리 구조로 갑니다.
+`tools/pose2sim_demo.py` 는 리포 경로가 non-ASCII 면 작업 폴더를
+`~/Pose2SimWork` 로 자동 이동시키고, 실행 전에 경로를 점검해 조기 중단합니다.
+
+---
+
 ## 4. PC 파이프라인
 
 1. **FastAPI 업로드 수신** → `videos/camNN.mp4` + `camNN_timestamps.json`

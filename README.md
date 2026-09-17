@@ -15,8 +15,8 @@
 
 | 단계 | 내용 | 상태 |
 | --- | --- | --- |
-| 0 | PC에서 Pose2Sim 데모 실행 → `.trc` 생성 확인 | 진행 중 |
-| **1** | **GitHub 리포 + Actions APK 빌드 + 기기 진단 화면** | **현재** |
+| **0** | **PC에서 Pose2Sim 데모 실행 → `.trc` + `.mot` 생성 확인** | **완료** |
+| 1 | GitHub 리포 + Actions APK 빌드 + 기기 진단 화면 | 코드 완료, 푸시 대기 |
 | 2 | 클럭 동기 전용 최소 앱 (성공 판정: 오차 2ms 미만) | 대기 |
 | 3 | 녹화 + 예약 시작 + 타임스탬프 사이드카 | 대기 |
 | 4 | PC 업로드 수신 + 키포인트 리샘플러 + Pose2Sim 자동 실행 | 대기 |
@@ -26,9 +26,75 @@
 
 설계 근거와 확정 사항은 [docs/DESIGN.md](docs/DESIGN.md) 에 있습니다.
 
+## 0단계: Pose2Sim 데모 실행 (완료)
+
+### 설치 (한 번만)
+
+```powershell
+# uv 설치
+winget install --id astral-sh.uv
+
+# 격리 환경 (공식 문서와 동일)
+uv venv "$env:USERPROFILE\.venv\pose2sim" --python 3.13
+uv pip install --python "$env:USERPROFILE\.venv\pose2sim\Scripts\python.exe" pose2sim
+```
+
+`opensim` 이 pip 의존성에 포함되어 있어 **OpenSim 을 따로 설치할 필요가 없습니다.**
+
+### 실행
+
+```powershell
+$env:PYTHONUTF8 = '1'
+& "$env:USERPROFILE\.venv\pose2sim\Scripts\python.exe" tools\pose2sim_demo.py
+```
+
+이 스크립트는 데모 폴더를 복사하고, 8단계를 순서대로 돌린 뒤,
+**산출물을 검증해서 성공/실패를 판정**합니다. 옵션은 `--help` 참고.
+
+기본은 `--mode headless` 입니다. Pose2Sim 기본 설정은 `synchronization_gui = true`
+라서 중간에 사람이 클릭할 때까지 멈추는데, 첫 실행은 무인으로 끝까지 돌려보는 게
+낫기 때문입니다. 공식 문서처럼 창을 다 보려면 `--mode interactive`.
+
+### 실측 결과 (i7-14700HX / CPU만 사용)
+
+| 단계 | 소요 |
+| --- | --- |
+| calibration | 1.6초 |
+| poseEstimation | 26.5초 |
+| synchronization | 6.3초 |
+| personAssociation | 1.7초 |
+| triangulation | 3.6초 |
+| filtering | 5.1초 |
+| markerAugmentation | 0.3초 |
+| kinematics | 7.9초 |
+| **합계** | **53.1초** |
+
+산출물 (카메라 4대 / 97프레임 / 60Hz):
+
+- `pose-3d/*.trc` 3개 — 22마커(원본), 22마커(필터), **65마커(LSTM 증강)**, 결측 0.00%
+- `kinematics/*.osim` 스케일된 전신 OpenSim 모델 (2.3MB)
+- `kinematics/*.mot` 관절각 **63개 좌표 × 96프레임**, degree 단위
+  (골반, 양쪽 고관절·무릎·발목·subtalar·mtp, 요추 L5-S1~L1-T12, 목, 양팔·팔꿈치·손목)
+
+품질 지표:
+
+| 항목 | 값 | 기준 |
+| --- | --- | --- |
+| 캘리브레이션 잔차 (RMS, 카메라별) | 0.221 / 0.235 / 0.171 / 0.191 px | 0.5 px 미만 권장 → 통과 |
+| 평균 재투영 오차 | 약 10 px ≈ 18~21 mm | — |
+| 배제된 카메라 수 (평균) | 0.05대 | 낮을수록 좋음 |
+| 보간된 프레임 | 0개 | — |
+| IK 마커 오차 (RMS) | 평균 22.7 mm, 최대 28.9 mm | 마커리스 통상 범위 |
+
+> **GPU는 아직 안 씁니다.** 설치된 `onnxruntime 1.30.0` 은 CPU 전용이고
+> providers 가 `['AzureExecutionProvider', 'CPUExecutionProvider']` 입니다.
+> RTX 4060 을 쓰려면 `onnxruntime-gpu` 로 교체해야 합니다. 데모는 CPU로 53초라
+> 급하지 않지만, 실제 촬영(수천 프레임)에서는 큰 차이가 납니다.
+
 ## 폴더 구조
 
 ```
+tools/pose2sim_demo.py    0단계 데모 러너 (8단계 실행 + 산출물 검증)
 android/                  Kotlin + Jetpack Compose 앱 (단일 APK, MASTER/SLAVE 역할 선택)
   app/src/main/java/com/mocapsync/app/
     MainActivity.kt

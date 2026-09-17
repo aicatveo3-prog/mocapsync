@@ -33,6 +33,9 @@ venv/
 sessions/
 data/
 videos/
+# Pose2Sim 데모/작업 폴더 (영상 + 프레임별 json + 생성 영상으로 수백 MB가 됩니다)
+pose2sim_projects/
+logs/
 *.mp4
 *.trc
 *.c3d
