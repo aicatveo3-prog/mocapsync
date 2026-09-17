@@ -60,6 +60,41 @@ Android Studio 없이 폰에 설치할 수 있게 만들어 두었습니다.
 > 설치가 됩니다. 캐시가 만료되면 서명이 한 번 바뀌는데, 그때는 "앱이 설치되지 않았습니다"
 > 오류가 나므로 기존 앱을 삭제하고 다시 설치하세요.
 
+## 로컬 빌드 (선택 — CI만 써도 됩니다)
+
+Android Studio 없이 커맨드라인으로 빌드할 수 있습니다.
+
+```
+JDK 17          C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot
+Android SDK     C:\Users\USER\Android\sdk   (platform-35, build-tools 35.0.0, platform-tools)
+Gradle          android/gradlew (wrapper 8.13)
+```
+
+> **함정 하나.** AGP는 프로젝트 경로에 **non-ASCII 문자가 있으면 빌드를 거부합니다.**
+> 이 프로젝트 폴더 이름(`모션캡쳐_Pose2Sim`)이 여기에 걸립니다.
+> 그래서 ASCII 경로로 디렉터리 정션을 만들어 그 안에서 빌드합니다 (파일 복사 아님, 관리자 권한 불필요).
+>
+> ```powershell
+> cmd /c mklink /J "C:\mocapsync-build" "C:\Users\USER\Desktop\모션캡쳐_Pose2Sim\android"
+> ```
+>
+> CI는 리눅스의 ASCII 경로에서 돌기 때문에 영향받지 않습니다.
+
+```powershell
+$env:JAVA_HOME   = 'C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot'
+$env:ANDROID_HOME = 'C:\Users\USER\Android\sdk'
+cd C:\mocapsync-build
+.\gradlew.bat assembleDebug
+# 결과: android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+USB 디버깅으로 바로 설치하려면:
+
+```powershell
+C:\Users\USER\Android\sdk\platform-tools\adb.exe install -r `
+  "C:\Users\USER\Desktop\모션캡쳐_Pose2Sim\android\app\build\outputs\apk\debug\app-debug.apk"
+```
+
 ## 1단계 성공 판정
 
 아래 3개가 모두 되면 1단계는 끝입니다.
