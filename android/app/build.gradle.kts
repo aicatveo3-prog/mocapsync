@@ -63,13 +63,9 @@ android {
         jvmTarget = "17"
     }
 
-    // APK 파일 이름을 고정합니다 (CI 업로드/다운로드 링크가 안정적이도록)
-    applicationVariants.all {
-        outputs.all {
-            (this as? com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                ?.outputFileName = "mocapsync-${name}.apk"
-        }
-    }
+    // APK 파일 이름 변경은 Gradle 쪽에서 하지 않습니다.
+    // (applicationVariants.all 은 AGP 에서 deprecated 이고 Gradle 9 와 충돌합니다)
+    // CI 워크플로에서 app-debug.apk -> mocapsync-debug.apk 로 rename 합니다.
 
     lint {
         // 1단계에서 lint 경고 때문에 CI가 멈추지 않게 합니다

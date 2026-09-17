@@ -66,24 +66,25 @@ jobs:
           path: ~/.android/debug.keystore
           key: mocapsync-debug-keystore-v1
 
-      # 래퍼(gradle-wrapper.jar) 를 리포에 커밋하지 않습니다.
-      # 바이너리 파일 하나 줄이는 대신 CI 가 Gradle 버전을 명시적으로 설치합니다.
-      - name: Gradle 8.13 준비
+      # Gradle 버전은 android/gradle/wrapper/gradle-wrapper.properties 가 정합니다.
+      # 이 액션은 의존성/빌드 캐시만 담당합니다.
+      - name: Gradle 캐시 준비
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.13'
 
       - name: 빌드 (assembleDebug)
         working-directory: android
-        run: gradle assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace
 
-      - name: 산출물 확인
+      # 파일명을 고정합니다. Gradle 쪽에서 하지 않는 이유는
+      # applicationVariants.all 이 AGP 에서 deprecated 이기 때문입니다.
+      - name: APK 이름 정리
         id: apk
         run: |
           set -e
           DIR=android/app/build/outputs/apk/debug
           ls -lh "$DIR"
-          APK=$(ls "$DIR"/*.apk | head -n 1)
+          mv "$DIR/app-debug.apk" "$DIR/mocapsync-debug.apk"
+          APK="$DIR/mocapsync-debug.apk"
           echo "path=$APK" >> "$GITHUB_OUTPUT"
           echo "size=$(du -h "$APK" | cut -f1)" >> "$GITHUB_OUTPUT"
 
