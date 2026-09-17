@@ -1,0 +1,45 @@
+# ─── Android / Gradle ───────────────────────────────────────────
+*.iml
+.gradle/
+build/
+local.properties
+.cxx/
+captures/
+.externalNativeBuild/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+# 키스토어는 절대 커밋하지 않습니다
+*.jks
+*.keystore
+
+# ─── Android Studio / IntelliJ ──────────────────────────────────
+.idea/
+*.hprof
+
+# ─── Python (PC 파이프라인) ─────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# ─── 촬영 데이터 / 결과물 (용량이 크므로 git에 넣지 않음) ───────
+sessions/
+data/
+videos/
+*.mp4
+*.trc
+*.c3d
+*.mot
+*.osim
+
+# ─── OS ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

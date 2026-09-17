@@ -1,0 +1,144 @@
+name: Android APK
+
+# 트리거
+#  - main 에 push 되면 빌드하고, "latest" 릴리스를 갱신합니다.
+#    (폰 브라우저에서 고정 URL로 바로 APK 를 내려받게 하려는 목적)
+#  - PR 은 빌드만 하고 릴리스는 건드리지 않습니다.
+#  - Actions 탭에서 손으로 돌릴 수도 있습니다 (workflow_dispatch).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# latest 릴리스에 APK 를 올리기 위해 쓰기 권한이 필요합니다.
+permissions:
+  contents: write
+
+# 같은 브랜치에 연속으로 푸시하면 이전 빌드는 취소합니다.
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+
+      - name: JDK 17 설치
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ANDROID_HOME 과 cmdline-tools(PATH) 를 보장합니다.
+      - name: Android SDK 준비
+        uses: android-actions/setup-android@v3
+
+      # 러너 이미지에 이미 있을 수도 있지만, 명시적으로 설치해서
+      # "SDK 버전이 없어서 실패" 라는 흔한 실패 모드를 제거합니다.
+      - name: SDK 패키지 설치 (platform 35 / build-tools 35)
+        run: |
+          set -e
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+          echo "--- 설치된 platforms ---"
+          ls "$ANDROID_HOME/platforms" || true
+          echo "--- 설치된 build-tools ---"
+          ls "$ANDROID_HOME/build-tools" || true
+
+      # ─────────────────────────────────────────────────────────────────────
+      # 왜 debug 키스토어를 캐시하는가:
+      # CI 러너는 매번 새 머신이라 AGP 가 debug.keystore 를 새로 랜덤 생성합니다.
+      # 그러면 빌드마다 APK 서명이 달라지고, 폰에서 "덮어쓰기 설치"가 거부되어
+      # 매번 삭제 후 재설치를 해야 합니다. 캐시로 서명을 고정합니다.
+      # (캐시가 만료/삭제되면 서명이 한 번 바뀝니다. 그때만 앱을 삭제 후 설치하세요.)
+      # ─────────────────────────────────────────────────────────────────────
+      - name: debug 키스토어 캐시 (APK 서명 고정)
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: mocapsync-debug-keystore-v1
+
+      # 래퍼(gradle-wrapper.jar) 를 리포에 커밋하지 않습니다.
+      # 바이너리 파일 하나 줄이는 대신 CI 가 Gradle 버전을 명시적으로 설치합니다.
+      - name: Gradle 8.13 준비
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: 빌드 (assembleDebug)
+        working-directory: android
+        run: gradle assembleDebug --stacktrace
+
+      - name: 산출물 확인
+        id: apk
+        run: |
+          set -e
+          DIR=android/app/build/outputs/apk/debug
+          ls -lh "$DIR"
+          APK=$(ls "$DIR"/*.apk | head -n 1)
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h "$APK" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: 요약 작성
+        run: |
+          {
+            echo "## MocapSync debug APK"
+            echo ""
+            echo "| 항목 | 값 |"
+            echo "| --- | --- |"
+            echo "| 커밋 | \`${GITHUB_SHA:0:7}\` |"
+            echo "| CI run | ${{ github.run_number }} |"
+            echo "| versionCode | $(( ${{ github.run_number }} + 1 )) |"
+            echo "| 크기 | ${{ steps.apk.outputs.size }} |"
+            echo ""
+            echo "### 설치 방법"
+            echo "1. 이 페이지 아래 **Artifacts** 에서 zip 을 받거나,"
+            echo "2. 폰 브라우저로 리포지토리의 **Releases > latest** 에서 \`.apk\` 를 직접 받으세요."
+            echo ""
+            echo "설치가 거부되면 '알 수 없는 앱 설치'를 허용해야 합니다."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 아티팩트 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: mocapsync-debug-apk-run${{ github.run_number }}
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # 폰에서 바로 설치할 수 있게 고정 태그 릴리스를 계속 덮어씁니다.
+      - name: latest 릴리스 갱신
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: 최신 debug APK
+          prerelease: true
+          body: |
+            자동 생성된 최신 debug 빌드입니다. 이 페이지는 main 에 push 될 때마다 덮어써집니다.
+
+            - 커밋: `${{ github.sha }}`
+            - CI run: ${{ github.run_number }}
+            - versionName: `0.1.${{ github.run_number }}-step1`
+
+            아래 `.apk` 파일을 폰 브라우저에서 눌러 설치하세요.
+          files: android/app/build/outputs/apk/debug/*.apk
+
+      - name: 실패 시 빌드 리포트 업로드
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports-run${{ github.run_number }}
+          path: |
+            android/app/build/reports/
+            android/build/reports/
+          if-no-files-found: ignore
+          retention-days: 7

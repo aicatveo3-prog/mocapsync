@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 로그 내보내기는 cacheDir/logs/ 에 파일을 만든 뒤 이 경로로 공유합니다 -->
+    <cache-path
+        name="logs"
+        path="logs/" />
+</paths>

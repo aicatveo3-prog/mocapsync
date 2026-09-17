@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  아이콘 컨셉: 서로 다른 순간에 시작한 카메라 3대(흰 막대)가
+  하나의 공통 타임라인(초록 바) 위에 정렬된다는 뜻.
+  SVG 호환성 문제를 피하려고 직선 폴리곤만 사용했습니다.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,42 L40,42 L40,70 L30,70 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M49,32 L59,32 L59,70 L49,70 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M68,48 L78,48 L78,70 L68,70 Z" />
+
+    <path
+        android:fillColor="#FF4ADE80"
+        android:pathData="M26,74 L82,74 L82,80 L26,80 Z" />
+</vector>

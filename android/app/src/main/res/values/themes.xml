@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      UI는 전부 Jetpack Compose(Material3)로 그립니다.
+      따라서 XML 테마는 AppCompat/Material 라이브러리 없이 프레임워크 테마만 씁니다.
+      (의존성 하나 줄이면 CI 실패 지점도 하나 줄어듭니다)
+    -->
+    <style name="Theme.MocapSync" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#FF101418</item>
+        <item name="android:windowBackground">#FF101418</item>
+    </style>
+</resources>

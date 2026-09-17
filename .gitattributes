@@ -1,0 +1,16 @@
+# 리포지토리에는 항상 LF 로 저장합니다.
+# 이유: .github/workflows 의 셸 스크립트가 CRLF 로 커밋되면 리눅스 러너에서
+# "\r: command not found" 같은 황당한 실패가 납니다.
+* text=eol=lf
+
+# 바이너리
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.apk binary
+*.jar binary
+*.keystore binary
+*.jks binary
+*.mp4 binary
+*.onnx binary
