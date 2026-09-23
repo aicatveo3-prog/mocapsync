@@ -46,3 +46,5 @@ logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+# 로컬 venv
+.venv/
