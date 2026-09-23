@@ -1,0 +1,78 @@
+name: iOS Core Tests
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 순수 로직(MocapSyncCore)만 macOS 네이티브로 테스트합니다.
+#
+# 왜 시뮬레이터를 안 쓰는가:
+# 개발자(AI)는 Windows 에서 Swift 를 컴파일할 수 없어 모든 컴파일 오류를
+# CI 왕복으로 잡아야 합니다. 그래서 CI 가 빨라야 합니다.
+# iOS 시뮬레이터 부팅은 2~3분이 걸리지만, UIKit/AVFoundation 이 없는 순수 로직은
+# `swift test` 로 macOS 에서 바로 돌려 수십 초에 끝납니다.
+#
+# 비용: public 리포는 macOS 러너도 무료입니다.
+# (private 이면 분당 10배로 계산돼서 무료 2000분이 실질 200분이 됩니다)
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/Package.swift'
+      - 'ios/Sources/**'
+      - 'ios/Tests/**'
+      - '.github/workflows/ios-core-tests.yml'
+  pull_request:
+    paths:
+      - 'ios/Package.swift'
+      - 'ios/Sources/**'
+      - 'ios/Tests/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ios-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: swift test (macOS, 시뮬레이터 없음)
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 환경 확인
+        run: |
+          echo "--- macOS ---"
+          sw_vers
+          echo "--- Xcode ---"
+          xcodebuild -version
+          echo "--- Swift ---"
+          swift --version
+          echo "--- 사용 가능한 Xcode ---"
+          ls /Applications | grep -i xcode || true
+
+      - name: 빌드
+        working-directory: ios
+        run: swift build -v
+
+      - name: 테스트
+        working-directory: ios
+        run: swift test
+
+      - name: 요약
+        if: always()
+        run: |
+          {
+            echo "## MocapSyncCore 테스트"
+            echo ""
+            echo "| 항목 | 값 |"
+            echo "| --- | --- |"
+            echo "| 커밋 | \`${GITHUB_SHA:0:7}\` |"
+            echo "| Xcode | $(xcodebuild -version | head -n1) |"
+            echo "| Swift | $(swift --version 2>&1 | head -n1) |"
+            echo ""
+            echo "순수 로직(시각 계산 · 규약)만 검증합니다."
+            echo "카메라/네트워크가 필요한 부분은 실기기에서 확인합니다."
+          } >> "$GITHUB_STEP_SUMMARY"
