@@ -22,7 +22,13 @@ MS = sc.NS_PER_MS
 S = sc.NS_PER_S
 
 
-def make_frames(count: int, start_ns: int = 10_000_000_000,
+#: 프레임 시작 시각 = 부팅 후 1000초.
+#  실제 폰이 그 정도 켜져 있고, "동기를 5분 전에 했다" 같은 상황을 만들려면
+#  앞쪽에 여유가 있어야 합니다 (10초로 두면 음수가 됩니다).
+BASE_START_NS = 1_000_000_000_000
+
+
+def make_frames(count: int, start_ns: int = BASE_START_NS,
                 fps: float = 60) -> list[list[int]]:
     step = int(1e9 / fps)
     return [[k, start_ns + k * step] for k in range(count)]
@@ -44,7 +50,7 @@ def valid_dict(frame_count: int = 600) -> dict:
         "clockOffsetNs": 5_522_186_169_000,
         "clockUncertaintyNs": 2_038_000,
         "clockMinRttNs": 4_076_000,
-        "clockMeasuredAtNs": 9_000_000_000,
+        "clockMeasuredAtNs": BASE_START_NS - 1_000_000_000,   # 첫 프레임 1초 전
         "sleepAtSyncNs": 1_234_567,
         "sleepAtRecordStartNs": 1_234_567,
         "timestampSource": "CMSampleBufferPresentationTimeStamp",
@@ -62,8 +68,9 @@ def valid_dict(frame_count: int = 600) -> dict:
         "whiteBalanceLocked": True,
         "exposureLocked": True,
         "stabilization": "off",
-        "requestedStartAtMasterNs": 5_522_196_169_000,
-        "requestedStartAtSlaveNs": 10_000_000_000,
+        # 마스터시각 = 슬레이브시각 + 오프셋
+        "requestedStartAtMasterNs": BASE_START_NS + 5_522_186_169_000,
+        "requestedStartAtSlaveNs": BASE_START_NS,
         "firstFramePtsNs": frames[0][1],
         "droppedFrameCount": 0,
         "thermalAtStart": "nominal",
@@ -349,6 +356,52 @@ def test_fixed_focus_lens_does_not_warn():
     assert s.is_usable
 
 
+def test_sync_too_old_is_fatal():
+    """
+    ★ 가장 안 보이는 실패 모드.
+    측정 상한은 2.038ms 로 좋은데, 5분 전 측정이면 드리프트가 12ms 쌓여
+    실효 상한이 반 프레임을 넘습니다. 측정값만 보면 알 수 없습니다.
+    """
+    d = valid_dict()
+    d["clockMeasuredAtNs"] = d["frames"][0][1] - 300 * S
+    s = load(d)
+    assert "sync_too_old" in fatals(s), s.validation_report()
+    assert not s.is_usable
+
+
+def test_sync_aging_warns():
+    d = valid_dict()
+    d["clockMeasuredAtNs"] = d["frames"][0][1] - 120 * S
+    s = load(d)
+    assert "sync_aging" in codes(s)
+    assert s.is_usable, "120초는 실효 6.84ms 로 반 프레임 안입니다"
+
+
+def test_recent_sync_does_not_warn():
+    d = valid_dict()
+    d["clockMeasuredAtNs"] = d["frames"][0][1] - 50 * S
+    c = codes(load(d))
+    assert "sync_aging" not in c
+    assert "sync_too_old" not in c
+
+
+def test_drift_constant_matches_swift():
+    """
+    ios 쪽 Sidecar.assumedDriftPpm / ClockOffsetRecord.worstCaseDriftPpm 과
+    같아야 합니다. 다르면 폰에서는 통과했는데 PC 에서 거부됩니다.
+    """
+    assert sc.ASSUMED_DRIFT_PPM == 40.0
+
+
+def test_drift_budget_rationale():
+    """40 ppm 에서 2ms 를 소진하는 시간이 50초 -> 신선 기준 60초의 근거."""
+    seconds_to_burn_2ms = 2e-3 / (sc.ASSUMED_DRIFT_PPM / 1e6)
+    assert seconds_to_burn_2ms == pytest.approx(50, abs=0.01)
+    # 반 프레임을 소진하는 시간
+    seconds_to_burn_half_frame = (sc.HALF_FRAME_NS_60 / 1e9) / (sc.ASSUMED_DRIFT_PPM / 1e6)
+    assert seconds_to_burn_half_frame == pytest.approx(208.3, abs=0.5)
+
+
 def test_report_on_fully_clean_sidecar():
     """
     오차 상한이 목표(2ms) 안이면 info 조차 없어야 합니다.
@@ -376,7 +429,7 @@ def test_schema_version_mismatch_warns():
 
 # ── 세션 단위 검사 ───────────────────────────────────────────────────────────
 
-def two_cams(offset_b_ns: int = 0, start_b_ns: int = 10_000_000_000):
+def two_cams(offset_b_ns: int = 0, start_b_ns: int = BASE_START_NS):
     a = valid_dict(600)
     a["deviceId"] = "CAM_A"
     b = valid_dict(600)
@@ -421,14 +474,14 @@ def test_session_no_overlap_is_fatal():
     클럭 오프셋이 틀렸을 때 이렇게 됩니다. 이게 잡혀야 합니다.
     """
     # B 를 1시간 뒤에 찍은 것으로 만듭니다
-    a, b = two_cams(start_b_ns=10_000_000_000 + 3600 * S)
+    a, b = two_cams(start_b_ns=BASE_START_NS + 3600 * S)
     out = sc.check_session([a, b])
     assert any(i.code == "no_overlap" and i.severity == "fatal" for i in out)
 
 
 def test_session_short_overlap_warns():
     # B 를 9초 뒤에 시작 -> 10초 길이끼리 1초만 겹칩니다
-    a, b = two_cams(start_b_ns=10_000_000_000 + 9 * S)
+    a, b = two_cams(start_b_ns=BASE_START_NS + 9 * S)
     out = sc.check_session([a, b])
     assert any(i.code == "overlap_too_short" for i in out)
 

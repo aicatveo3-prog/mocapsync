@@ -16,8 +16,12 @@ final class SidecarTests: XCTestCase {
 
     let MS = NS.perMilli
 
-    /// 60fps 로 정확히 찍힌 프레임들
-    func makeFrames(count: Int, startNs: Int64 = 10_000_000_000,
+    /// 60fps 로 정확히 찍힌 프레임들.
+    ///
+    /// 시작 시각을 부팅 후 1000초로 잡습니다. 실제 폰이 그 정도 켜져 있고,
+    /// 무엇보다 테스트에서 "동기를 5분 전에 했다" 같은 상황을 만들려면
+    /// 앞쪽에 여유가 있어야 합니다 (10초로 두면 음수가 됩니다).
+    func makeFrames(count: Int, startNs: Int64 = 1_000_000_000_000,
                     fps: Double = 60) -> [[Int64]] {
         let step = Int64(1e9 / fps)
         return (0..<count).map { [Int64($0), startNs + Int64($0) * step] }
@@ -34,7 +38,7 @@ final class SidecarTests: XCTestCase {
             clockOffsetNs: 5_522_186_169_000,
             clockUncertaintyNs: 2_038_000,      // 실측 최고 기록
             clockMinRttNs: 4_076_000,
-            clockMeasuredAtNs: 9_000_000_000,   // 첫 프레임보다 앞
+            clockMeasuredAtNs: 999_000_000_000,  // 첫 프레임 1초 전
             sleepAtSyncNs: 1_234_567,
             sleepAtRecordStartNs: 1_234_567,    // 안 잤음
             timestampSource: "CMSampleBufferPresentationTimeStamp",
@@ -46,8 +50,9 @@ final class SidecarTests: XCTestCase {
             iso: 400, lensPosition: 0.42,
             focusLocked: true, whiteBalanceLocked: true, exposureLocked: true,
             stabilization: "off",
-            requestedStartAtMasterNs: 5_522_196_169_000,
-            requestedStartAtSlaveNs: 10_000_000_000,
+            // 마스터시각 = 슬레이브시각 + 오프셋
+            requestedStartAtMasterNs: 1_000_000_000_000 + 5_522_186_169_000,
+            requestedStartAtSlaveNs: 1_000_000_000_000,
             firstFramePtsNs: frames[0][1],
             droppedFrameCount: 0,
             thermalAtStart: "nominal", thermalAtEnd: "fair",
@@ -314,6 +319,43 @@ final class SidecarTests: XCTestCase {
         s.cameraDeviceType = "AVCaptureDeviceTypeBuiltInUltraWideCamera"
         XCTAssertFalse(codes(s).contains("focus_not_locked"))
         XCTAssertTrue(s.isUsable)
+    }
+
+    // MARK: - 동기 나이 / 드리프트
+
+    /// ★ 가장 안 보이는 실패 모드.
+    /// 측정 상한은 2.038ms 로 좋은데, 5분 전 측정이면 드리프트가 12ms 쌓여
+    /// 실효 상한이 반 프레임을 넘습니다. 측정값만 보면 알 수 없습니다.
+    func testSyncTooOldIsFatal() {
+        var s = makeValid()
+        s.clockMeasuredAtNs = s.frames[0][1] - 300 * NS.perSecond
+        let f = fatals(s)
+        XCTAssertTrue(f.contains("sync_too_old"), "\(s.validationReport())")
+        XCTAssertFalse(s.isUsable)
+    }
+
+    /// 60초를 넘으면 경고. 촬영 자체는 막지 않습니다.
+    func testSyncAgingWarns() {
+        var s = makeValid()
+        s.clockMeasuredAtNs = s.frames[0][1] - 120 * NS.perSecond
+        XCTAssertTrue(codes(s).contains("sync_aging"))
+        XCTAssertTrue(s.isUsable, "120초는 실효 6.84ms 로 반 프레임 안입니다")
+    }
+
+    /// 60초 안이면 아무 말도 하지 않아야 합니다.
+    func testRecentSyncDoesNotWarn() {
+        var s = makeValid()
+        s.clockMeasuredAtNs = s.frames[0][1] - 50 * NS.perSecond
+        XCTAssertFalse(codes(s).contains("sync_aging"))
+        XCTAssertFalse(codes(s).contains("sync_too_old"))
+    }
+
+    /// ★ 앱이 경고하는 기준과 검증이 판정하는 기준이 같아야 합니다.
+    /// 다르면 폰에서는 통과했는데 PC 에서 거부되는 일이 생깁니다.
+    func testDriftConstantsAgreeAcrossTypes() {
+        XCTAssertEqual(Sidecar.assumedDriftPpm,
+                       ClockOffsetRecord.worstCaseDriftPpm,
+                       "Sidecar 와 ClockOffsetRecord 의 드리프트 가정이 다릅니다")
     }
 
     func testFramesBeforeSyncWarns() {

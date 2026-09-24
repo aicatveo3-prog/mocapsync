@@ -454,6 +454,13 @@ final class SyncClient: ObservableObject {
                 est.offsetMs, est.minRttMs, est.uncertaintyMs, est.spreadMs))
             AppLog.shared.i("Sync", "판정: \(est.verdict())")
 
+            // ★ 앱 전체에 공유합니다. 이걸 빼먹어서 3단계 첫 시험에서
+            //   녹화 사이드카가 오프셋 0 으로 기록되어 "사용 불가"가 났습니다.
+            //   측정만 잘해도 녹화로 전달되지 않으면 아무 의미가 없습니다.
+            if est.samplesUsed > 0 {
+                SyncStore.shared.record(est, masterId: lastServerId ?? label)
+            }
+
             // ★ 분포를 로그에 남깁니다. 이게 다음 행동을 결정합니다.
             AppLog.shared.i("Sync", prof.summaryLine)
             for l in prof.histogramLines { AppLog.shared.i("Sync", l) }

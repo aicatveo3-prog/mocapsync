@@ -47,6 +47,14 @@ TARGET_UNCERTAINTY_NS = 2 * NS_PER_MS
 #: 실측 기준선(최악 2.995 ms)보다 나쁘면 warning. 링크 이상 신호.
 DEGRADED_UNCERTAINTY_NS = 3 * NS_PER_MS
 
+#: 드리프트 판정에 쓰는 상대 주파수 오차 (ppm).
+#
+#  휴대기기 수정발진자 규격이 보통 ±20 ppm 이라 두 기기 상대로 40 ppm 을
+#  최악값으로 잡습니다.
+#  ios 쪽 Sidecar.assumedDriftPpm / ClockOffsetRecord.worstCaseDriftPpm 과
+#  같은 값이어야 합니다. 다르면 폰에서는 통과했는데 PC 에서 거부되는 일이 생깁니다.
+ASSUMED_DRIFT_PPM = 40.0
+
 #: 1/500초. 이보다 느리면 모션블러
 MAX_EXPOSURE_NS = 2_000_000
 
@@ -468,6 +476,39 @@ class Sidecar:
                 "warning", "frames_before_sync",
                 "첫 프레임이 오프셋 측정보다 먼저 찍혔습니다. "
                 "동기 → 녹화 순서를 확인하세요."))
+
+        # ── 동기 나이와 드리프트 ────────────────────────────────────────────
+        #
+        # ★ 가장 안 보이는 실패 모드입니다.
+        #
+        # 두 기기의 수정발진자 주파수가 미세하게 다릅니다. 규격은 보통 ±20 ppm 이고
+        # 상대 드리프트는 최악 40 ppm 입니다. 1초에 40 µs 씩 조용히 어긋납니다.
+        #   2 ms 예산 소진 = 50초 / 반 프레임(8.33ms) 소진 = 약 3분 30초
+        # 오프셋을 재고 한참 뒤에 찍으면 측정 상한은 좋은데 실제로는 어긋납니다.
+        # 측정값만으로는 알 수 없으므로 나이로 판정합니다.
+        if (self.clock_uncertainty_ns > 0 and ts
+                and self.clock_measured_at_ns > 0
+                and ts[0] >= self.clock_measured_at_ns):
+            age = ts[0] - self.clock_measured_at_ns
+            drift = int(age * ASSUMED_DRIFT_PPM / 1e6)
+            effective = self.clock_uncertainty_ns + drift
+
+            if effective > HALF_FRAME_NS_60:
+                out.append(Issue(
+                    "fatal", "sync_too_old",
+                    f"동기를 {age / NS_PER_S:.0f}초 전에 측정했습니다. "
+                    f"수정발진자 차이({ASSUMED_DRIFT_PPM:.0f} ppm 가정)로 최악 "
+                    f"{drift / NS_PER_MS:.2f} ms 드리프트가 쌓여 실효 상한이 "
+                    f"{effective / NS_PER_MS:.2f} ms 입니다. "
+                    "반 프레임(8.333 ms)을 넘으므로 프레임을 잘못 짝지을 수 "
+                    "있습니다. 촬영 직전에 동기를 다시 하세요."))
+            elif age > 60 * NS_PER_S:
+                out.append(Issue(
+                    "warning", "sync_aging",
+                    f"동기를 {age / NS_PER_S:.0f}초 전에 측정했습니다. 최악 "
+                    f"{drift / NS_PER_MS:.2f} ms 드리프트가 쌓였을 수 있어 "
+                    f"실효 상한은 {effective / NS_PER_MS:.2f} ms 입니다. "
+                    "다음에는 촬영 직전에 동기하세요."))
 
         # ── 예약 시작 ───────────────────────────────────────────────────────
         want = self.requested_start_at_slave_ns

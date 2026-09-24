@@ -55,6 +55,14 @@ public struct Sidecar: Codable, Equatable, Sendable {
     /// 60fps 반 프레임. 넘으면 fatal — 프레임 짝짓기가 모호해집니다.
     public static let halfFrame60Ns: Int64 = 8_333_333
 
+    /// 드리프트 판정에 쓰는 상대 주파수 오차 (ppm).
+    ///
+    /// 휴대기기 수정발진자 규격이 보통 ±20 ppm 이라 두 기기 상대로 40 ppm 을
+    /// 최악값으로 잡습니다. `ClockOffsetRecord.worstCaseDriftPpm` 과 같은 값이어야
+    /// 합니다 — 앱이 경고하는 기준과 PC 가 판정하는 기준이 다르면
+    /// 폰에서는 통과했는데 PC 에서 거부되는 일이 생깁니다.
+    public static let assumedDriftPpm: Double = 40
+
     // ── 형식 ────────────────────────────────────────────────────────────────
     public var schemaVersion: Int
 
@@ -377,6 +385,44 @@ public extension Sidecar {
         if let first = ts.first, first < clockMeasuredAtNs {
             out.append(.init(.warning, "frames_before_sync",
                 "첫 프레임이 오프셋 측정보다 먼저 찍혔습니다. 동기 → 녹화 순서를 확인하세요."))
+        }
+
+        // ── 동기 나이와 드리프트 ────────────────────────────────────────────
+        //
+        // ★ 가장 안 보이는 실패 모드입니다.
+        //
+        // 두 기기의 수정발진자 주파수가 미세하게 다릅니다. 규격은 보통 ±20 ppm 이고
+        // 상대 드리프트는 최악 40 ppm 입니다. 1초에 40 µs 씩 조용히 어긋납니다.
+        //
+        //   2 ms 예산을 소진하는 시간 = 2 ms / 40 ppm = 50초
+        //   반 프레임(8.33 ms)을 소진하는 시간 = 약 3분 30초
+        //
+        // 오프셋을 재고 한참 뒤에 촬영하면 측정 상한은 좋은데 실제로는 어긋납니다.
+        // 측정값만 보면 절대 알 수 없으므로 **나이로** 판정합니다.
+        //
+        // 사이드카에는 드리프트를 더하지 않은 원본 상한이 들어 있고,
+        // clockMeasuredAtNs 와 첫 프레임 시각이 있으므로 나이가 계산됩니다.
+        if clockUncertaintyNs > 0, let first = ts.first, first >= clockMeasuredAtNs,
+           clockMeasuredAtNs > 0 {
+            let age = first - clockMeasuredAtNs
+            let drift = Int64(Double(age) * Sidecar.assumedDriftPpm / 1e6)
+            let effective = clockUncertaintyNs + drift
+
+            if effective > Sidecar.halfFrame60Ns {
+                out.append(.init(.fatal, "sync_too_old",
+                    String(format: "동기를 %.0f초 전에 측정했습니다. 수정발진자 차이(%.0f ppm 가정)로 "
+                           + "최악 %.2f ms 드리프트가 쌓여 실효 상한이 %.2f ms 입니다. "
+                           + "반 프레임(8.333 ms)을 넘으므로 프레임을 잘못 짝지을 수 있습니다. "
+                           + "촬영 직전에 동기를 다시 하세요.",
+                           Double(age) / 1e9, Sidecar.assumedDriftPpm,
+                           drift.ms, effective.ms)))
+            } else if age > 60 * NS.perSecond {
+                out.append(.init(.warning, "sync_aging",
+                    String(format: "동기를 %.0f초 전에 측정했습니다. 최악 %.2f ms 드리프트가 "
+                           + "쌓였을 수 있어 실효 상한은 %.2f ms 입니다. "
+                           + "다음에는 촬영 직전에 동기하세요.",
+                           Double(age) / 1e9, drift.ms, effective.ms)))
+            }
         }
 
         // ── 예약 시작 ───────────────────────────────────────────────────────

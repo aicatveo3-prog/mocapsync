@@ -19,6 +19,7 @@ struct RecordView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 previewCard
+                syncCard
                 statusCard
                 controlCard
                 if !cap.recorder.lastValidation.isEmpty { validationCard }
@@ -145,15 +146,71 @@ struct RecordView: View {
             Divider().padding(.vertical, 4)
             KV("남은 녹화 시간", String(format: "약 %.0f분",
                                    CaptureCoordinator.estimatedMinutesLeft()))
-            KV("클럭 동기", cap.sync.isValid
-                ? String(format: "오차 상한 %.3f ms", cap.sync.uncertaintyNs.ms)
-                : "없음 — 사이드카가 '치명'으로 판정됩니다")
-            if !cap.sync.isValid {
-                Text("★ 클럭 동기 화면에서 먼저 측정하세요. 동기 없이 찍으면 "
-                     + "여러 대를 합칠 수 없습니다. (1대 시험 촬영은 그대로 가능)")
-                    .font(.caption2).foregroundStyle(.orange)
+        }
+    }
+
+    // MARK: - 클럭 동기 상태 ★ 가장 먼저 보여야 하는 카드
+
+    /// 3단계 첫 시험에서 사이드카가 "사용 불가"로 나온 원인이 여기였습니다.
+    /// 동기 화면과 녹화 화면이 서로를 몰라서 오프셋이 0 이었습니다.
+    /// 이제 연결됐고, 상태를 **촬영 전에** 크게 보여줍니다.
+    private var syncCard: some View {
+        let fresh = cap.syncFreshness
+        let ok = fresh.canRecord
+        let color: Color = ok ? .green : .orange
+
+        return Card(title: "클럭 동기 상태") {
+            HStack(spacing: 8) {
+                Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(color)
+                Text(ok ? "촬영 가능" : "촬영 전에 동기가 필요합니다")
+                    .font(.headline).foregroundStyle(color)
+            }
+
+            Text(fresh.summary)
+                .font(.caption).foregroundStyle(.secondary)
+
+            if let r = SyncStore.shared.latest {
+                Divider().padding(.vertical, 4)
+                KV("오프셋", String(format: "%+.3f ms", r.offsetNs.ms))
+                KV("측정 당시 상한", String(format: "%.3f ms", r.uncertaintyNs.ms))
+                KV("드리프트 포함 상한",
+                   String(format: "%.3f ms",
+                          SyncStore.shared.displayEffectiveUncertaintyNs.ms))
+                if let ppm = SyncStore.shared.measuredDriftPpm,
+                   let unc = SyncStore.shared.driftUncertaintyPpm {
+                    KV("드리프트 실측",
+                       abs(ppm) > unc
+                       ? String(format: "%+.2f ppm (±%.2f)", ppm, unc)
+                       : String(format: "측정 불가 (±%.2f ppm 잡음 안)", unc))
+                } else {
+                    KV("드리프트 실측", "두 번 측정하면 나옵니다")
+                }
+            }
+
+            if !ok {
+                NavigationLink {
+                    SyncView()
+                } label: {
+                    Text("클럭 동기 하러 가기")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity).padding(.vertical, 12)
+                        .background(Color.blue.opacity(0.85),
+                                    in: RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(.white)
+                }
+                .padding(.top, 8)
+
+                Text("""
+                     동기 없이도 녹화는 됩니다. 카메라 설정을 시험하는 데는 쓸 수 있습니다.
+                     다만 사이드카 검증이 '사용 불가'로 나옵니다 — 여러 대의 영상을
+                     합칠 수 없기 때문입니다. 3D 복원에 쓸 영상은 반드시 동기 후에 찍으세요.
+                     """)
+                    .font(.caption2).foregroundStyle(.secondary).padding(.top, 6)
             }
         }
+        .padding(.vertical, 2)
+        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
     }
 
     // MARK: - 조작

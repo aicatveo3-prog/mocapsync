@@ -51,6 +51,25 @@ public enum MonotonicClock {
     public static func cumulativeSleepNs() -> Int64 {
         realtimeNs() - nowNs()
     }
+
+    /// ★ 부팅 시각 (epoch 나노초). 재부팅을 감지하는 데 씁니다.
+    ///
+    /// 왜 필요한가: `CLOCK_UPTIME_RAW` 는 부팅 때 0 으로 초기화됩니다.
+    /// 그래서 저장해 둔 클럭 오프셋은 재부팅 후 **완전히 무의미**해집니다.
+    /// 그런데 오프셋 값만 봐서는 재부팅했는지 알 수 없습니다.
+    ///
+    /// `kern.boottime` 은 부팅한 벽시계 시각이라 재부팅하면 값이 바뀝니다.
+    /// 저장 시점과 사용 시점의 이 값을 비교하면 재부팅을 확실히 잡습니다.
+    ///
+    /// (절전만으로는 이 값이 바뀌지 않습니다. 절전은 cumulativeSleepNs 로 잡습니다)
+    public static func bootTimeEpochNs() -> Int64 {
+        var tv = timeval()
+        var size = MemoryLayout<timeval>.stride
+        if sysctlbyname("kern.boottime", &tv, &size, nil, 0) != 0 {
+            return 0
+        }
+        return Int64(tv.tv_sec) * NS.perSecond + Int64(tv.tv_usec) * NS.perMicro
+    }
 }
 
 /// 나노초 상수.

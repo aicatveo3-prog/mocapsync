@@ -46,8 +46,14 @@ final class CaptureCoordinator: ObservableObject {
     @Published private(set) var lastSidecar: URL?
     @Published private(set) var sessions: [String] = []
 
-    /// 동기 결과를 여기 넣어두면 녹화 시 사이드카에 들어갑니다.
-    @Published var sync = Recorder.SyncSnapshot.empty
+    /// 동기 결과. ★ SyncStore 에서 **녹화 시작 직전에** 읽습니다.
+    ///
+    /// 미리 복사해 두면 그 사이에 폰이 자거나 재측정한 것을 놓칩니다.
+    /// 그래서 필드로 들고 있지 않고 매번 물어봅니다.
+    var sync: Recorder.SyncSnapshot { SyncStore.shared.snapshotForRecording() }
+
+    /// 지금 오프셋이 촬영에 쓸 수 있는 상태인지
+    var syncFreshness: ClockOffsetRecord.Freshness { SyncStore.shared.freshness() }
 
     let camera = CameraController()
     private(set) var recorder: Recorder!
@@ -56,6 +62,7 @@ final class CaptureCoordinator: ObservableObject {
     /// ★ Recorder 의 변경을 이 객체의 변경으로 전달합니다.
     ///   이게 없으면 화면이 `cap` 만 보고 있어서 프레임 수·fps 가 갱신되지 않습니다.
     private var recorderObserver: AnyCancellable?
+    private var syncObserver: AnyCancellable?
 
     /// 자동노출/자동초점이 수렴할 시간. 짧으면 엉뚱한 값으로 잠깁니다.
     static let convergeSeconds: Double = 1.5
@@ -67,6 +74,10 @@ final class CaptureCoordinator: ObservableObject {
                             queue: camera.videoQueue)
         recorder.delegate = self
         recorderObserver = recorder.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        // 동기 측정이 갱신되면 녹화 화면의 표시도 바뀌어야 합니다.
+        syncObserver = SyncStore.shared.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         refreshSessions()
