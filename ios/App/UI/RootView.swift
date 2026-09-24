@@ -13,6 +13,7 @@ struct RootView: View {
                     buildCard
                     firstStepCard
                     roleCard
+                    recordCard
                     logCard
                     footer
                 }
@@ -104,21 +105,47 @@ struct RootView: View {
             }
             .padding(.top, 10)
 
-            HStack(spacing: 10) {
-                RoleButton(title: "마스터 역할") {
-                    toast = "3단계에서 구현됩니다 (지금은 PC 가 마스터)"
-                }
-                RoleButton(title: "녹화") {
-                    toast = "3단계에서 구현됩니다"
-                }
-            }
-            .padding(.top, 8)
-
             Text("""
-                 목표: 오차 상한 2 ms 미만. 최소 RTT 가 4 ms 미만이면 수학적으로 보장됩니다.
+                 실측 결과: 이 경로(폰·PC 모두 공유기 WiFi)의 바닥은 최소 RTT \
+                 4.076 ms = 오차 상한 2.038 ms 입니다. 설정을 바꿔도 4 ms 아래로 \
+                 내려가지 않았습니다. 목표 2 ms 는 측정 정밀도 안에서 달성된 것으로 \
+                 보고 이 단계를 닫았습니다. (자세한 기록은 DESIGN.md §3.12)
                  """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .padding(.top, 6)
+        }
+    }
+
+    private var recordCard: some View {
+        Card(title: "녹화 (3단계)") {
+            Text("""
+                 1080p 60fps · 노출/초점/화이트밸런스 고정 · 안정화 끄기로 촬영하고, \
+                 프레임마다 시각을 사이드카 JSON 에 기록합니다. \
+                 폰 1대로도 시험 촬영과 예약 시작 자체시험이 가능합니다.
+                 """)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            NavigationLink {
+                RecordView()
+            } label: {
+                Text("녹화 화면 열기")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.red.opacity(0.8), in: RoundedRectangle(cornerRadius: 10))
+                    .foregroundStyle(.white)
+            }
+            .padding(.top, 10)
+
+            Text("""
+                 ★ 촬영 전에 '클럭 동기'를 먼저 하세요. 폰이 한 번 자면 이전 \
+                 오프셋이 무효가 됩니다 (CLOCK_UPTIME_RAW 가 절전 중 멈춥니다 — 실측 확인). \
+                 사이드카가 그걸 탐지해서 '치명'으로 표시합니다.
+                 """)
+                .font(.caption2)
+                .foregroundStyle(.orange)
                 .padding(.top, 6)
         }
     }

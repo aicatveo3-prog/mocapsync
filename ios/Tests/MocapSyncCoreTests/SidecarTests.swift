@@ -185,7 +185,8 @@ final class SidecarTests: XCTestCase {
         s.sleepAtRecordStartNs = s.sleepAtSyncNs + 34 * 60 * NS.perSecond
         XCTAssertTrue(s.sleptSinceSync)
         XCTAssertTrue(fatals(s).contains("slept_since_sync"))
-        XCTAssertTrue(s.validationReport().joined().contains("34"),
+        // 보고는 초 단위로 찍습니다. 34분 = 2040.0초.
+        XCTAssertTrue(s.validationReport().joined().contains("2040.0"),
                       "잔 시간이 보고에 나와야 합니다: \(s.validationReport())")
     }
 
@@ -329,8 +330,24 @@ final class SidecarTests: XCTestCase {
 
     // MARK: - 보고 형식
 
-    func testValidationReportOnCleanSidecar() {
-        XCTAssertEqual(makeValid().validationReport(), ["문제 없음 ✔"])
+    /// 오차 상한이 목표(2ms) 안이면 info 조차 없어야 합니다.
+    ///
+    /// 실측 기본값 2.038ms 는 목표를 살짝 넘어 info 가 하나 붙으므로,
+    /// 이 테스트는 "목표를 만족했을 때"의 이상적 상태를 확인합니다.
+    /// (폰↔폰이나 유선 경로에서 이 값이 나올 수 있습니다)
+    func testValidationReportOnFullyCleanSidecar() {
+        var s = makeValid()
+        s.clockUncertaintyNs = 1_900_000
+        s.clockMinRttNs = 3_800_000
+        XCTAssertEqual(s.validationReport(), ["문제 없음 ✔"],
+                       "목표를 만족했는데도 문제가 보고됩니다: \(s.validationReport())")
+    }
+
+    /// 실측 기본값에서는 info 하나만 나와야 합니다.
+    func testValidationReportOnMeasuredSidecar() {
+        let r = makeValid().validationReport()
+        XCTAssertEqual(r.count, 1, "실측 정상본에 보고가 여러 건입니다: \(r)")
+        XCTAssertTrue(r[0].hasPrefix("[참고]"), r[0])
     }
 
     func testValidationReportMarksSeverity() {

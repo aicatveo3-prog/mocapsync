@@ -349,6 +349,25 @@ def test_fixed_focus_lens_does_not_warn():
     assert s.is_usable
 
 
+def test_report_on_fully_clean_sidecar():
+    """
+    오차 상한이 목표(2ms) 안이면 info 조차 없어야 합니다.
+    실측 기본값 2.038ms 는 목표를 살짝 넘어 info 가 붙으므로,
+    이 테스트는 "목표를 만족했을 때"의 이상적 상태를 확인합니다.
+    """
+    d = valid_dict()
+    d["clockUncertaintyNs"] = 1_900_000
+    d["clockMinRttNs"] = 3_800_000
+    s = load(d)
+    assert s.validation_report() == ["문제 없음 ✔"], s.validation_report()
+
+
+def test_report_on_measured_sidecar_has_single_info():
+    r = load(valid_dict()).validation_report()
+    assert len(r) == 1, r
+    assert r[0].startswith("[참고]"), r[0]
+
+
 def test_schema_version_mismatch_warns():
     d = valid_dict()
     d["schemaVersion"] = 99
