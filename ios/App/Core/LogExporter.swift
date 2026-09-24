@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI   // UIViewControllerRepresentable 은 UIKit 이 아니라 SwiftUI 소속입니다
 import UIKit
 
 /// 로그 내보내기.

@@ -177,7 +177,8 @@ enum DeviceProbe {
 
         let customExposure = d.isExposureModeSupported(.custom)
         let lockedFocus = d.isFocusModeSupported(.locked)
-        let lockedWB = d.isWhiteBalanceModeSupported(.lockedWhiteBalance)
+        // 케이스 이름은 .locked 입니다 (.lockedWhiteBalance 가 아님)
+        let lockedWB = d.isWhiteBalanceModeSupported(.locked)
 
         // ── 판정 ──
         var checks: [Check] = []
