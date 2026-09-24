@@ -48,3 +48,11 @@ Thumbs.db
 desktop.ini
 # 로컬 venv
 .venv/
+
+# XcodeGen 이 생성하는 파일들
+ios/*.xcodeproj/
+ios/App/Info.generated.plist
+ios/build/
+ios/.build/
+ios/Payload/
+ios/*.ipa

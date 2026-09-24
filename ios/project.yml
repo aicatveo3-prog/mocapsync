@@ -45,9 +45,12 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mocapsync.ios
-        INFOPLIST_FILE: ""
-        GENERATE_INFOPLIST_FILE: "NO"
         TARGETED_DEVICE_FAMILY: "1"   # iPhone 전용
+        # ★ INFOPLIST_FILE 을 직접 지정하지 마세요.
+        #   아래 info: 블록이 plist 를 생성하면서 INFOPLIST_FILE 을 자동으로
+        #   설정합니다. 여기서 빈 값으로 덮어쓰면
+        #   "Build input file cannot be found: .../Info.plist" 로 실패합니다.
+        #   (실제로 이 실수로 CI 가 한 번 깨졌습니다)
     info:
       path: App/Info.generated.plist
       properties:
