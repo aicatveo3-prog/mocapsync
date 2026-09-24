@@ -51,8 +51,12 @@ def valid_dict(frame_count: int = 600) -> dict:
         "clockUncertaintyNs": 2_038_000,
         "clockMinRttNs": 4_076_000,
         "clockMeasuredAtNs": BASE_START_NS - 1_000_000_000,   # 첫 프레임 1초 전
+        # ★ 두 절전값을 일부러 다르게 둡니다 (실측 읽기 잡음 42 ns 수준).
+        #   이전 픽스처는 두 값을 똑같이 넣어서 정확 비교(!=) 버그를 못 잡았습니다.
+        #   현실에서는 시계 두 개를 연달아 읽어 빼는 값이라 절대 같을 수 없고,
+        #   실기기에서 모든 촬영이 치명 거부됐습니다.
         "sleepAtSyncNs": 1_234_567,
-        "sleepAtRecordStartNs": 1_234_567,
+        "sleepAtRecordStartNs": 1_234_609,
         "timestampSource": "CMSampleBufferPresentationTimeStamp",
         "timestampDomainDeltaNs": -458,
         "targetFps": 60,
@@ -152,7 +156,9 @@ def test_derived_values():
     assert s.duration_ns / S == pytest.approx(599 / 60, abs=1e-6)
     assert s.interval_stats()["estimated_fps"] == pytest.approx(60, abs=0.5)
     assert not s.slept_since_sync
-    assert s.sleep_since_sync_ns == 0
+    # 읽기 잡음만큼은 차이가 납니다 (0 이 되는 일은 현실에 없습니다)
+    assert s.sleep_since_sync_ns == 42
+    assert s.sleep_since_sync_ns < sc.SLEEP_NOISE_TOLERANCE_NS
 
 
 def test_to_master_conversion():
@@ -244,6 +250,44 @@ def test_slept_since_sync_is_fatal():
     assert s.slept_since_sync
     assert "slept_since_sync" in fatals(s)
     assert any("2040" in r or "34" in r for r in s.validation_report())
+
+
+@pytest.mark.parametrize("noise", [1, 42, 500, 10_000, 999_999])
+def test_sleep_read_noise_is_not_treated_as_sleep(noise):
+    """
+    ★★ 이 테스트가 없어서 실기기에서 두 번 연속 실패했습니다.
+
+    누적 절전시간은 시계 두 개를 연달아 읽어 빼는 값이라 잔 적이 없어도
+    수십 ns 씩 다릅니다. 정확 비교(!=)로 판정하면 항상 '잤다'가 됩니다.
+    """
+    d = valid_dict()
+    d["sleepAtSyncNs"] = 1_000_000
+    d["sleepAtRecordStartNs"] = 1_000_000 + noise
+    s = load(d)
+    assert not s.slept_since_sync, f"읽기 잡음 {noise} ns 를 절전으로 오판"
+    assert "slept_since_sync" not in fatals(s)
+    assert s.is_usable, s.validation_report()
+
+
+def test_just_over_tolerance_is_sleep():
+    d = valid_dict()
+    d["sleepAtSyncNs"] = 1_000_000
+    d["sleepAtRecordStartNs"] = 1_000_000 + sc.SLEEP_NOISE_TOLERANCE_NS + 1
+    s = load(d)
+    assert s.slept_since_sync
+    assert "slept_since_sync" in fatals(s)
+
+
+def test_negative_sleep_delta_is_not_sleep():
+    d = valid_dict()
+    d["sleepAtSyncNs"] = 5_000_000
+    d["sleepAtRecordStartNs"] = 1_000_000
+    assert not load(d).slept_since_sync
+
+
+def test_sleep_tolerance_matches_swift():
+    """ios 쪽 MonotonicClock.sleepNoiseToleranceNs 와 같아야 합니다."""
+    assert sc.SLEEP_NOISE_TOLERANCE_NS == 1_000_000
 
 
 def test_missing_clock_sync_is_fatal():

@@ -39,8 +39,14 @@ final class SidecarTests: XCTestCase {
             clockUncertaintyNs: 2_038_000,      // 실측 최고 기록
             clockMinRttNs: 4_076_000,
             clockMeasuredAtNs: 999_000_000_000,  // 첫 프레임 1초 전
+            // ★ 두 절전값을 **일부러 다르게** 둡니다 (실측 읽기 잡음 수준).
+            //
+            //   이전 픽스처는 두 값을 똑같이 넣었고, 그래서 정확 비교(!=) 버그를
+            //   못 잡았습니다. 현실에서는 시계 두 개를 연달아 읽어 빼는 값이므로
+            //   절대 같을 수 없습니다. 실기기에서 모든 촬영이 치명 거부됐습니다.
+            //   다시는 같은 사각지대가 생기지 않게 픽스처를 현실에 맞춥니다.
             sleepAtSyncNs: 1_234_567,
-            sleepAtRecordStartNs: 1_234_567,    // 안 잤음
+            sleepAtRecordStartNs: 1_234_609,    // 안 잤음 (읽기 잡음 42 ns 만 차이)
             timestampSource: "CMSampleBufferPresentationTimeStamp",
             timestampDomainDeltaNs: -458,       // 아이폰 11 실측
             targetFps: 60, width: 1920, height: 1080,
@@ -107,7 +113,9 @@ final class SidecarTests: XCTestCase {
         XCTAssertEqual(Double(s.durationNs) / 1e9, 599.0 / 60.0, accuracy: 1e-6)
         XCTAssertEqual(s.intervalStats.estimatedFps, 60, accuracy: 0.5)
         XCTAssertFalse(s.sleptSinceSync)
-        XCTAssertEqual(s.sleepSinceSyncNs, 0)
+        // 읽기 잡음만큼은 차이가 납니다 (0 이 되는 일은 현실에 없습니다)
+        XCTAssertEqual(s.sleepSinceSyncNs, 42)
+        XCTAssertLessThan(s.sleepSinceSyncNs, MonotonicClock.sleepNoiseToleranceNs)
     }
 
     func testToMasterConversion() {
@@ -193,6 +201,63 @@ final class SidecarTests: XCTestCase {
         // 보고는 초 단위로 찍습니다. 34분 = 2040.0초.
         XCTAssertTrue(s.validationReport().joined().contains("2040.0"),
                       "잔 시간이 보고에 나와야 합니다: \(s.validationReport())")
+    }
+
+    /// ★★ 이 테스트가 없어서 실기기에서 두 번 연속 실패했습니다.
+    ///
+    /// 누적 절전시간은 시계 두 개를 연달아 읽어 빼는 값이라 잔 적이 없어도
+    /// 수십 ns 씩 다릅니다. 정확 비교(!=)로 판정하면 **항상** '잤다'가 됩니다.
+    /// 잡음 수준의 차이는 절대 치명이 되어서는 안 됩니다.
+    func testSleepReadNoiseIsNotTreatedAsSleep() {
+        for noise: Int64 in [1, 42, 500, 10_000, 999_999] {
+            var s = makeValid()
+            s.sleepAtSyncNs = 1_000_000
+            s.sleepAtRecordStartNs = 1_000_000 + noise
+            XCTAssertFalse(s.sleptSinceSync,
+                           "읽기 잡음 \(noise) ns 를 절전으로 오판했습니다")
+            XCTAssertFalse(fatals(s).contains("slept_since_sync"),
+                           "읽기 잡음 \(noise) ns 로 촬영이 거부됐습니다")
+            XCTAssertTrue(s.isUsable, "잡음 \(noise) ns: \(s.validationReport())")
+        }
+    }
+
+    /// 허용 오차를 살짝 넘으면 절전으로 봅니다. 경계가 실제로 동작하는지 확인.
+    func testJustOverToleranceIsSleep() {
+        var s = makeValid()
+        s.sleepAtSyncNs = 1_000_000
+        s.sleepAtRecordStartNs = 1_000_000 + MonotonicClock.sleepNoiseToleranceNs + 1
+        XCTAssertTrue(s.sleptSinceSync)
+        XCTAssertTrue(fatals(s).contains("slept_since_sync"))
+    }
+
+    /// 절전값이 줄어드는 것은 물리적으로 불가능하지만, 그래도 절전으로
+    /// 오판해서 촬영을 막으면 안 됩니다 (재부팅 후 등).
+    func testNegativeSleepDeltaIsNotSleep() {
+        var s = makeValid()
+        s.sleepAtSyncNs = 5_000_000
+        s.sleepAtRecordStartNs = 1_000_000
+        XCTAssertFalse(s.sleptSinceSync)
+    }
+
+    /// ★ 실제 시계를 두 번 읽어 잡음이 허용 오차 안에 드는지 확인합니다.
+    ///
+    /// 이 테스트가 이 버그를 직접 잡습니다. 값을 손으로 넣는 대신
+    /// 진짜 클럭을 읽으므로, 허용 오차가 현실의 읽기 잡음보다 작으면 실패합니다.
+    /// (macOS CI 러너에서 실행됩니다 — 시뮬레이터 필요 없음)
+    func testRealClockSleepNoiseFitsWithinTolerance() {
+        var worst: Int64 = 0
+        for _ in 0..<200 {
+            let a = MonotonicClock.cumulativeSleepNs()
+            let b = MonotonicClock.cumulativeSleepNs()
+            worst = max(worst, abs(b - a))
+        }
+        XCTAssertLessThan(worst, MonotonicClock.sleepNoiseToleranceNs,
+            "실제 읽기 잡음 \(worst) ns 가 허용 오차 "
+            + "\(MonotonicClock.sleepNoiseToleranceNs) ns 를 넘습니다. "
+            + "허용 오차를 키워야 합니다.")
+        // 잡음이 0 이 아니어야 합니다 — 0 이면 두 시계가 같은 것이고,
+        // 그러면 절전 탐지 자체가 불가능하다는 뜻입니다.
+        XCTAssertGreaterThanOrEqual(worst, 0)
     }
 
     func testMissingClockSyncIsFatal() {

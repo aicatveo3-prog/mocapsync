@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 /// 녹화 화면.
 ///
@@ -276,15 +277,57 @@ struct RecordView: View {
     // MARK: - 자체검증
 
     private var validationCard: some View {
-        Card(title: cap.recorder.lastUsable
+        let lines = cap.recorder.lastValidation
+        let fatalLines = lines.filter { $0.hasPrefix("[치명]") }
+        let usable = cap.recorder.lastUsable
+
+        return Card(title: usable
              ? "사이드카 자체검증 — 사용 가능 ✔"
              : "사이드카 자체검증 — ★ 사용 불가") {
-            ForEach(Array(cap.recorder.lastValidation.enumerated()), id: \.offset) { _, line in
+
+            // ★ 치명 사유를 가장 크게, 가장 먼저.
+            //   이전 버전은 모든 줄을 같은 크기로 늘어놓아서 사용자가
+            //   "사용 불가"만 보고 이유를 지나쳤습니다. 그러면 개발자는
+            //   추측할 수밖에 없고 수정이 한 번에 안 끝납니다.
+            if !usable {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("이 촬영은 3D 복원에 쓸 수 없습니다")
+                        .font(.headline).foregroundStyle(.red)
+                    ForEach(Array(fatalLines.enumerated()), id: \.offset) { _, l in
+                        Text(l.replacingOccurrences(of: "[치명] ", with: ""))
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.red.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+
+                Button {
+                    UIPasteboard.general.string =
+                        "MocapSync \(BuildInfo.versionFull)\n" + lines.joined(separator: "\n")
+                } label: {
+                    Text("검증 결과 복사 (개발자에게 붙여주세요)")
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity).padding(.vertical, 10)
+                        .background(Color.blue.opacity(0.8),
+                                    in: RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(.white)
+                }
+                .padding(.top, 8)
+            }
+
+            Divider().padding(.vertical, 6)
+
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                 Text(line)
                     .font(.caption)
                     .foregroundStyle(line.hasPrefix("[치명]") ? .red
                                      : (line.hasPrefix("[경고]") ? .orange : .secondary))
+                    .fixedSize(horizontal: false, vertical: true)
             }
+
             Text("★ 폰에서 바로 검증하는 이유: PC 까지 올리고 나서 문제를 발견하면 "
                  + "다시 찍을 기회를 놓칩니다. 여기서 '치명'이 나오면 그 촬영은 "
                  + "3D 복원에 쓸 수 없습니다.")

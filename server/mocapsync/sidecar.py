@@ -55,6 +55,17 @@ DEGRADED_UNCERTAINTY_NS = 3 * NS_PER_MS
 #  같은 값이어야 합니다. 다르면 폰에서는 통과했는데 PC 에서 거부되는 일이 생깁니다.
 ASSUMED_DRIFT_PPM = 40.0
 
+#: 누적 절전시간 두 값의 차이가 이 값 이하면 "안 잤다"고 봅니다.
+#
+#  이 값은 폰에서 시계 두 개를 연달아 읽어 빼서 만들므로, 잔 적이 없어도
+#  읽기 간격만큼 수십 ns 씩 달라집니다 (아이폰 11 실측 42 ns).
+#  ios 쪽 MonotonicClock.sleepNoiseToleranceNs 와 같은 값이어야 합니다.
+#
+#  1 ms 근거: 읽기 잡음은 수십 ns ~ 수백 µs, 의미 있는 절전은 수백 ms 이상.
+#  두 영역 사이에 넉넉히 들어갑니다. 1 ms 절전을 놓쳐도 피해가 1 ms 라서
+#  오차 예산(2 ms) 안입니다.
+SLEEP_NOISE_TOLERANCE_NS = 1 * NS_PER_MS
+
 #: 1/500초. 이보다 느리면 모션블러
 MAX_EXPOSURE_NS = 2_000_000
 
@@ -328,8 +339,19 @@ class Sidecar:
 
     @property
     def slept_since_sync(self) -> bool:
-        """★ 동기 이후 폰이 잤는가. 잤다면 clock_offset_ns 는 무효입니다."""
-        return self.sleep_at_record_start_ns != self.sleep_at_sync_ns
+        """
+        ★ 동기 이후 폰이 잤는가. 잤다면 clock_offset_ns 는 무효입니다.
+
+        ★★ 반드시 허용 오차를 써야 합니다.
+
+        누적 절전시간은 폰에서 시계 두 개(CLOCK_MONOTONIC_RAW, CLOCK_UPTIME_RAW)를
+        연달아 읽어 빼서 만듭니다. 그래서 잔 적이 없어도 읽기 간격만큼
+        수십 ns 씩 값이 달라집니다 (아이폰 11 실측 42 ns).
+
+        처음에 != 로 비교했더니 모든 촬영이 '잤다'로 판정되어 치명 거부됐습니다.
+        (2026-09-24 3단계 시험에서 두 번 연속 "사용 불가"가 난 원인)
+        """
+        return self.sleep_since_sync_ns > SLEEP_NOISE_TOLERANCE_NS
 
     @property
     def sleep_since_sync_ns(self) -> int:

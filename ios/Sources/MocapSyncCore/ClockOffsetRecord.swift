@@ -122,8 +122,11 @@ public extension ClockOffsetRecord {
 
         // (2) 절전 — 누적 절전시간이 늘었으면 그만큼 어긋났습니다.
         let slept = nowSleepNs - sleepAtSyncNs
-        // 두 시계를 읽는 사이의 미세한 차이가 있으므로 1ms 여유를 둡니다.
-        if slept > NS.perMilli { return .slept(sleptNs: slept) }
+        // ★ 정확히 같은지 보면 안 됩니다. 이 값은 시계 두 개를 연달아 읽어
+        //   빼는 것이라 매번 수십 ns 씩 다릅니다 (Clock.swift 설명 참고).
+        if MonotonicClock.didSleep(from: sleepAtSyncNs, to: nowSleepNs) {
+            return .slept(sleptNs: slept)
+        }
 
         // (3) 시계가 뒤로 갔으면 뭔가 잘못된 것입니다 (재부팅을 놓친 경우 등)
         let age = nowSlaveNs - measuredAtSlaveNs
@@ -168,7 +171,8 @@ public extension ClockOffsetRecord {
         guard a.uncertaintyNs > 0, b.uncertaintyNs > 0 else { return nil }
         guard a.bootTimeEpochNs == b.bootTimeEpochNs else { return nil }
         // 절전을 거쳤으면 오프셋 변화의 대부분이 절전 때문이라 드리프트가 아닙니다
-        guard abs(b.sleepAtSyncNs - a.sleepAtSyncNs) <= NS.perMilli else { return nil }
+        guard abs(b.sleepAtSyncNs - a.sleepAtSyncNs)
+                <= MonotonicClock.sleepNoiseToleranceNs else { return nil }
 
         let dt = b.measuredAtSlaveNs - a.measuredAtSlaveNs
         // 너무 짧으면 측정 불확실도가 드리프트보다 훨씬 커서 의미가 없습니다.

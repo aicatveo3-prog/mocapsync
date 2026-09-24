@@ -221,7 +221,19 @@ public extension Sidecar {
     }
 
     /// ★ 동기 이후 폰이 잤는가. 잤다면 clockOffsetNs 는 무효입니다.
-    var sleptSinceSync: Bool { sleepAtRecordStartNs != sleepAtSyncNs }
+    ///
+    /// ★★ 반드시 허용 오차를 써야 합니다.
+    ///
+    /// 처음에 `sleepAtRecordStartNs != sleepAtSyncNs` 로 썼는데, 이 값은
+    /// 시계 두 개를 연달아 읽어 빼는 것이라 **매번 수십 ns 씩 다릅니다**.
+    /// 그래서 잔 적이 없어도 항상 '잤다'가 되어 모든 촬영이 치명으로 거부됐습니다.
+    /// (2026-09-24 3단계 시험에서 두 번 연속 "사용 불가"가 난 원인)
+    ///
+    /// 테스트는 두 값을 똑같이 넣어서 통과했습니다. 현실에서 같을 수 없는
+    /// 값을 같게 놓고 시험한 것이 사각지대였습니다.
+    var sleptSinceSync: Bool {
+        MonotonicClock.didSleep(from: sleepAtSyncNs, to: sleepAtRecordStartNs)
+    }
 
     /// 잔 시간
     var sleepSinceSyncNs: Int64 { sleepAtRecordStartNs - sleepAtSyncNs }
