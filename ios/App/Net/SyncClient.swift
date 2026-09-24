@@ -56,8 +56,18 @@ final class SyncClient: ObservableObject {
     /// 음성 등급(AC_VO)은 경쟁 대기시간이 가장 짧고, 무엇보다 절전 버퍼링을
     /// 우회하는 경로를 타는 경우가 많습니다. 통화가 100 ms 씩 끊기면 안 되니까요.
     ///
-    /// ※ 검증되지 않은 가정입니다. 그래서 고정하지 않고 **고를 수 있게** 만들어
-    ///   실기기에서 두 등급을 비교 측정합니다.
+    /// ★ 2026-09-24 20:04 실측 결과 — 가정은 **절반만** 맞았습니다.
+    ///
+    ///            최소RTT   중앙값   최대
+    ///   표준      4.076    6.6     180.3 ms
+    ///   음성우선  4.661    9.3      24.5 ms
+    ///
+    /// 최대값이 **7배** 줄었습니다 → 절전 버퍼링 우회는 실제로 일어납니다.
+    /// 그러나 **최소값은 줄지 않았습니다** → 오차 상한 개선에는 도움이 안 됩니다.
+    /// (오차 상한 = 최소RTT/2 이므로 최소값만 중요합니다)
+    ///
+    /// 그래도 기본값으로 채택했습니다. 예약 시작 명령은 한 번만 보내므로
+    /// 꼬리(최대값)가 곧 그 명령의 위험이기 때문입니다.
     enum NetPriority: String, Equatable, CaseIterable, Identifiable {
         /// 지금까지 쓴 값. 데이터 응답성 등급.
         case responsiveData
@@ -83,7 +93,7 @@ final class SyncClient: ObservableObject {
             case .responsiveData:
                 return "지금까지 측정한 등급입니다. 비교 기준선."
             case .interactiveVoice:
-                return "★ 음성통화 등급. WiFi 절전 버퍼링을 우회할 것으로 기대합니다 (최대 144ms 의 원인). 미검증."
+                return "★ 기본값. 실측에서 최대 RTT 를 180ms → 24ms 로 줄였습니다 (절전 버퍼링 우회 확인). 최소 RTT 는 줄지 않으므로 오차 상한은 그대로입니다."
             }
         }
     }
@@ -126,8 +136,22 @@ final class SyncClient: ObservableObject {
         /// 각 버스트 시작 시 버리는 왕복 수
         var burstWarmup: Int = 3
 
-        /// 통신 우선순위 (WiFi 접근 등급)
-        var priority: NetPriority = .responsiveData
+        /// 통신 우선순위 (WiFi 접근 등급).
+        ///
+        /// ★ 기본값을 음성우선으로 정한 근거 (2026-09-24 20:04 실측)
+        ///
+        ///            최소RTT   중앙값   최대
+        ///   표준      4.076    6.6     180.3 ms
+        ///   음성우선  4.661    9.3      24.5 ms
+        ///
+        /// 최소값은 표준이 조금 좋지만 그 차이는 측정 간 편차(4.08~5.99ms) 안입니다.
+        /// 반면 **최대값이 180 -> 24 ms** 로 7배 줄었습니다. 절전 버퍼링 우회가
+        /// 실제로 일어났다는 뜻입니다.
+        ///
+        /// 최대값을 중시하는 이유: 클럭 동기는 최소값만 쓰므로 꼬리가 무해하지만,
+        /// **예약 시작 명령**은 한 번만 보내므로 그 한 번이 180ms 지연되면 곤란합니다.
+        /// 여유(lead) 500ms 로 버틸 수는 있어도, 24ms 쪽이 훨씬 안전합니다.
+        var priority: NetPriority = .interactiveVoice
 
         /// 측정 설정을 한 문자열로. 마스터에게 보내 어떤 조건의 숫자인지 기록합니다.
         ///
@@ -151,16 +175,20 @@ final class SyncClient: ObservableObject {
 
         /// 단일 버스트 연사. 빠르지만 시간 창 하나만 봅니다.
         static let rapid = Options(probeCount: 120, warmupCount: 10, gapMs: 0,
-                                   burstSize: 0, burstGapMs: 0, burstWarmup: 0)
+                                   burstSize: 0, burstGapMs: 0, burstWarmup: 0,
+                                   priority: .interactiveVoice)
         /// ★ 기본값. 20회씩 20버스트, 사이 300ms → 약 7초간 20개 시간 창을 봅니다.
         static let spread = Options(probeCount: 400, warmupCount: 10, gapMs: 0,
-                                    burstSize: 20, burstGapMs: 300, burstWarmup: 3)
+                                    burstSize: 20, burstGapMs: 300, burstWarmup: 3,
+                                    priority: .interactiveVoice)
         /// 더 오래 흩뿌립니다. 약 30초.
         static let wide   = Options(probeCount: 600, warmupCount: 10, gapMs: 0,
-                                    burstSize: 20, burstGapMs: 900, burstWarmup: 3)
+                                    burstSize: 20, burstGapMs: 900, burstWarmup: 3,
+                                    priority: .interactiveVoice)
         /// 2026-09-24 17:56 측정과 같은 조건. 비교 기준선.
         static let legacy = Options(probeCount: 40, warmupCount: 0, gapMs: 5,
-                                    burstSize: 0, burstGapMs: 0, burstWarmup: 0)
+                                    burstSize: 0, burstGapMs: 0, burstWarmup: 0,
+                                    priority: .responsiveData)
     }
 
     @Published var phase: Phase = .idle
