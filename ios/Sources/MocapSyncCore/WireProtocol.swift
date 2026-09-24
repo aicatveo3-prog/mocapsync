@@ -84,7 +84,23 @@ public struct TimeResultMsg: Encodable {
     public let samplesUsed: Int
     public let samplesRejected: Int
 
-    public init(_ e: SyncEstimate) {
+    // ★ RTT 분포.
+    //
+    // 왜 규약에 넣는가: 최소 RTT 하나로는 "물리적 바닥"과 "표본 부족"을
+    // 구분할 수 없습니다. 분포가 폰 화면에만 있으면 사용자가 매번 로그를
+    // 내보내 붙여야 하고, 그만큼 디버깅 루프가 느려집니다.
+    // 마스터 콘솔에서 바로 보이게 만듭니다.
+    public let rttP0Ns: Int64
+    public let rttP10Ns: Int64
+    public let rttP50Ns: Int64
+    public let rttP90Ns: Int64
+    public let rttP100Ns: Int64
+    /// "narrow" / "moderate" / "heavyTail" / "tooFewSamples".
+    /// 마스터는 받은 백분위로 같은 판정을 독립 계산해서 이 값과 비교합니다.
+    /// 다르면 두 구현이 갈라졌다는 뜻이므로 경고를 찍습니다.
+    public let rttShape: String
+
+    public init(_ e: SyncEstimate, _ p: RttProfile = .empty) {
         self.offsetNs = e.offsetNs
         self.minRttNs = e.minRttNs
         self.uncertaintyNs = e.uncertaintyNs
@@ -92,6 +108,12 @@ public struct TimeResultMsg: Encodable {
         self.samplesTotal = e.samplesTotal
         self.samplesUsed = e.samplesUsed
         self.samplesRejected = e.samplesRejected
+        self.rttP0Ns = p.p0Ns
+        self.rttP10Ns = p.p10Ns
+        self.rttP50Ns = p.p50Ns
+        self.rttP90Ns = p.p90Ns
+        self.rttP100Ns = p.p100Ns
+        self.rttShape = p.shape.rawValue
     }
 }
 

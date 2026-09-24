@@ -82,7 +82,43 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(j["samplesRejected"] as? Int, 0)
         XCTAssertEqual(Set(j.keys),
                        ["type", "offsetNs", "minRttNs", "uncertaintyNs", "spreadNs",
-                        "samplesTotal", "samplesUsed", "samplesRejected"])
+                        "samplesTotal", "samplesUsed", "samplesRejected",
+                        "rttP0Ns", "rttP10Ns", "rttP50Ns", "rttP90Ns", "rttP100Ns",
+                        "rttShape"])
+    }
+
+    /// RTT 분포가 실제로 실려 나가는지. 값이 0 으로 새면 마스터가 진단을 못 합니다.
+    func testTimeResultCarriesRttProfile() throws {
+        let est = SyncEstimate(
+            offsetNs: 0, minRttNs: 4_435_000, uncertaintyNs: 2_217_500,
+            spreadNs: 485_000, samplesTotal: 120, samplesUsed: 1,
+            samplesRejected: 0, medianRttNs: 5_000_000)
+        // 2026-09-24 18:22 실측을 닮은 분포 (최소 4.435ms)
+        var s: [TimeSample] = []
+        for i in 0..<120 {
+            s.append(TimeSample(seq: i, t1: 0,
+                                t2: 4_435_000 / 2 + Int64(i % 6) * 120_000,
+                                t3: 4_435_000 / 2 + Int64(i % 6) * 120_000,
+                                t4: 4_435_000 + Int64(i % 6) * 240_000))
+        }
+        let prof = ClockSync.rttProfile(s)
+        let j = try json(try WireCodec.encodeLine(TimeResultMsg(est, prof)))
+
+        XCTAssertEqual((j["rttP0Ns"] as? NSNumber)?.int64Value, prof.p0Ns)
+        XCTAssertEqual((j["rttP50Ns"] as? NSNumber)?.int64Value, prof.p50Ns)
+        XCTAssertEqual((j["rttP100Ns"] as? NSNumber)?.int64Value, prof.p100Ns)
+        XCTAssertEqual(j["rttShape"] as? String, prof.shape.rawValue)
+        XCTAssertGreaterThan(prof.p0Ns, 0, "분포가 비어 있으면 이 테스트가 무의미합니다")
+    }
+
+    /// 분포를 안 넘기면 0 으로 나가야 합니다 (마스터가 '측정 없음'으로 읽도록).
+    func testTimeResultWithoutProfileIsZeroed() throws {
+        let est = SyncEstimate(
+            offsetNs: 1, minRttNs: 2, uncertaintyNs: 1, spreadNs: 0,
+            samplesTotal: 1, samplesUsed: 1, samplesRejected: 0, medianRttNs: 2)
+        let j = try json(try WireCodec.encodeLine(TimeResultMsg(est)))
+        XCTAssertEqual((j["rttP0Ns"] as? NSNumber)?.int64Value, 0)
+        XCTAssertEqual(j["rttShape"] as? String, "tooFewSamples")
     }
 
     func testStatusKeys() throws {

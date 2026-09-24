@@ -319,7 +319,7 @@ final class SyncClient: ObservableObject {
             //   기다리지 않고 close() 를 부르면 연결이 취소되면서
             //   "송신 실패: POSIXErrorCode(rawValue: 89): Operation canceled" 가 납니다.
             //   (2026-09-24 실측 로그에서 실제로 발생했습니다)
-            try await send(TimeResultMsg(est))
+            try await send(TimeResultMsg(est, prof))
             try await send(StatusMsg(state: "synced",
                                      battery: Double(UIDevice.current.batteryLevel),
                                      thermal: thermalName()))

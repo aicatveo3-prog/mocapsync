@@ -198,7 +198,7 @@ class SlaveSim:
         print()
 
         # 3) 결과 보고
-        writer.write(P.encode(P.time_result(self.est)))
+        writer.write(P.encode(P.time_result(self.est, self.prof)))
         await writer.drain()
         writer.write(P.encode(P.status("synced", battery=1.0, thermal="nominal")))
         await writer.drain()

@@ -91,6 +91,7 @@ class Slave:
         self.clock: str = "?"
         self.probe_count = 0
         self.estimate: dict | None = None
+        self.app_version: str = "?"
         self.state = "connected"
 
     def label(self) -> str:
@@ -164,7 +165,13 @@ class Master:
                     sl.model = str(msg.get("model", "?"))
                     sl.os_version = str(msg.get("osVersion", "?"))
                     sl.clock = str(msg.get("clock", "?"))
+                    sl.app_version = str(msg.get("appVersion", "?"))
+                    # ★ 앱 버전을 반드시 찍습니다.
+                    #   실기기 테스트를 사람이 대신하므로, 폰에 깔린 빌드가
+                    #   방금 만든 것인지 여기서 확인할 수 있어야 합니다.
+                    #   (앱이 appVersion 에 "0.3.0 (7) 1668d37" 형태로 보냅니다)
                     log(f"    hello: {sl.label()}  clock={sl.clock}", fh=self.fh)
+                    log(f"           앱 {sl.app_version}", fh=self.fh)
                     writer.write(P.encode(P.hello_ack(self.server_id, "py")))
                     await writer.drain()
 
@@ -191,6 +198,7 @@ class Master:
                         fh=self.fh)
                     log(f"    │  실측 흔들림 {spr:.3f} ms", fh=self.fh)
                     log(f"    │  샘플        {used}/{total}", fh=self.fh)
+                    self._log_rtt_profile(msg, total)
                     log(f"    └─ 판정: {'통과 ✔  (2ms 목표 달성)' if ok else '미달 �’'}",
                         fh=self.fh)
                     log("", fh=self.fh)
@@ -235,6 +243,48 @@ class Master:
             with contextlib.suppress(Exception):
                 writer.close()
                 await writer.wait_closed()
+
+    def _log_rtt_profile(self, msg: dict, total: int) -> None:
+        """
+        슬레이브가 보낸 RTT 분포를 찍습니다.
+
+        ★ 왜 마스터가 이걸 보여줘야 하는가
+
+        최소 RTT 숫자 하나로는 다음 두 상황을 구분할 수 없습니다.
+          (가) 이미 이 경로의 물리적 바닥   -> 왕복을 늘려도 안 내려감. 경로를 바꿔야 함
+          (나) 표본 부족 / 꼬리가 두꺼움     -> 왕복을 늘리면 내려감
+        p0 와 p50 의 간격이 그걸 알려줍니다.
+
+        분포가 폰 안에만 있으면 사람이 매번 로그를 내보내 붙여야 하고,
+        그만큼 디버깅 루프가 느려집니다. 그래서 규약에 실어 여기서 찍습니다.
+
+        ★ 그리고 여기서 **독립 재계산**을 합니다.
+        받은 백분위로 마스터가 직접 판정을 계산해 슬레이브가 보낸 rttShape 와
+        비교합니다. 다르면 Swift/Python 두 구현이 갈라진 것이므로 경고합니다.
+        (두 구현이 같은 입력에 같은 출력을 내야 한다는 규칙의 런타임 검사)
+        """
+        p0 = int(msg.get("rttP0Ns", 0))
+        if p0 <= 0:
+            log("    │  (RTT 분포 없음 — 구버전 슬레이브. 앱을 업데이트하면 보입니다)",
+                fh=self.fh)
+            return
+
+        prof = cs.RttProfile(
+            count=max(0, total - int(msg.get("samplesRejected", 0))),
+            p0_ns=p0,
+            p10_ns=int(msg.get("rttP10Ns", 0)),
+            p50_ns=int(msg.get("rttP50Ns", 0)),
+            p90_ns=int(msg.get("rttP90Ns", 0)),
+            p100_ns=int(msg.get("rttP100Ns", 0)),
+            buckets=cs.EMPTY_RTT_PROFILE.buckets,
+        )
+        log(f"    │  {prof.summary_line()}", fh=self.fh)
+        log(f"    │  분포[{prof.shape}] {prof.diagnosis}", fh=self.fh)
+
+        theirs = str(msg.get("rttShape", "?"))
+        if theirs != prof.shape:
+            log(f"    │  ★ 경고: 슬레이브 판정 '{theirs}' != 마스터 판정 "
+                f"'{prof.shape}'. Swift/Python 구현이 갈라졌습니다.", fh=self.fh)
 
     async def _auto_start(self, writer: asyncio.StreamWriter,
                           sl: Slave, delay_s: float) -> None:

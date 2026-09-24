@@ -103,8 +103,21 @@ def time_resp(seq: int, t1: int, t2: int, t3: int) -> dict:
     return {"type": T.TIME_RESP, "seq": seq, "t1": t1, "t2": t2, "t3": t3}
 
 
-def time_result(est) -> dict:
-    """est: clocksync.SyncEstimate"""
+def time_result(est, prof=None) -> dict:
+    """
+    est:  clocksync.SyncEstimate
+    prof: clocksync.RttProfile | None
+
+    ★ RTT 분포를 함께 실어 보냅니다.
+    최소 RTT 하나로는 "물리적 바닥"과 "표본 부족"을 구분할 수 없고,
+    분포가 슬레이브(폰) 안에만 있으면 사람이 매번 로그를 내보내 붙여야 해서
+    디버깅 루프가 느려집니다. 마스터 콘솔에서 바로 보이게 합니다.
+
+    ios/Sources/MocapSyncCore/WireProtocol.swift 의 TimeResultMsg 와
+    키가 정확히 같아야 합니다.
+    """
+    import mocapsync.clocksync as _cs
+    p = prof if prof is not None else _cs.EMPTY_RTT_PROFILE
     return {
         "type": T.TIME_RESULT,
         "offsetNs": est.offset_ns,
@@ -114,6 +127,12 @@ def time_result(est) -> dict:
         "samplesTotal": est.samples_total,
         "samplesUsed": est.samples_used,
         "samplesRejected": est.samples_rejected,
+        "rttP0Ns": p.p0_ns,
+        "rttP10Ns": p.p10_ns,
+        "rttP50Ns": p.p50_ns,
+        "rttP90Ns": p.p90_ns,
+        "rttP100Ns": p.p100_ns,
+        "rttShape": p.shape,
     }
 
 
