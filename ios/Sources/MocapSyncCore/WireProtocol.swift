@@ -253,3 +253,38 @@ public struct LineFramer {
 
     public var pendingBytes: Int { buffer.count }
 }
+
+// MARK: - time_req 전용 고속 인코더
+
+public extension WireCodec {
+
+    /// `time_req` 한 줄을 직접 문자열로 조립합니다.
+    ///
+    /// ★ 왜 따로 만드는가
+    ///
+    /// t1 은 "보내기 직전"에 찍어야 정확합니다. 그런데 t1 을 찍은 **뒤에**
+    /// JSONEncoder 가 돌아갑니다. JSONEncoder 는 리플렉션 기반이라 작은 구조체
+    /// 하나에도 수십~수백 µs 가 듭니다. 그 시간이 전부 "t1 이후 ~ 패킷 출발 전"에
+    /// 들어가므로 측정 RTT 를 그만큼 부풀립니다.
+    ///
+    /// 부풀어도 오차 상한 |오차| <= RTT/2 는 여전히 참이라 **틀리지는 않습니다**.
+    /// 다만 보수적으로 나빠져서, 목표 판정에서 억울하게 미달이 날 수 있습니다.
+    /// 왕복당 40회면 누적으로도 무시할 수 없습니다.
+    ///
+    /// 이 함수는 문자열 이어붙이기만 하므로 수 µs 로 끝납니다.
+    ///
+    /// ★ 키 순서는 JSONEncoder(.sortedKeys) 와 반드시 같아야 합니다: seq, t1, type.
+    ///   두 인코더가 바이트 단위로 같은 결과를 내는지 WireProtocolTests 가 검증합니다.
+    ///   (안 그러면 여기만 고치고 규약이 조용히 갈라집니다)
+    static func encodeTimeReqLine(seq: Int, t1: Int64) -> Data {
+        var s = ""
+        s.reserveCapacity(48)
+        s += #"{"seq":"#
+        s += String(seq)
+        s += #","t1":"#
+        s += String(t1)
+        s += #","type":"time_req"}"#
+        s += "\n"
+        return Data(s.utf8)
+    }
+}

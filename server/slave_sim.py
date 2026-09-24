@@ -69,6 +69,7 @@ class SlaveSim:
         self.rng = random.Random(args.seed)
         self.offset_ns = 0
         self.est: cs.SyncEstimate | None = None
+        self.prof: cs.RttProfile = cs.EMPTY_RTT_PROFILE
 
     # ── 슬레이브의 시계 ──────────────────────────────────────────────────────
     def clock_ns(self) -> int:
@@ -128,6 +129,21 @@ class SlaveSim:
             log(f"  (인공 지연: 편도 {self.a.delay_ms}ms, 흔들림 {self.a.jitter_ms}ms, "
                 f"업링크 비대칭 +{self.a.asym_ms}ms)")
 
+        # 2-a) 워밍업 — 결과를 버리는 왕복.
+        #
+        # PC 시뮬레이터에서는 무선 절전이 없으니 의미가 거의 없지만,
+        # 아이폰 앱(SyncClient)과 **같은 절차**를 돌려야 PC 에서 잡은 버그가
+        # 실기기에서도 같은 자리에서 잡힙니다. 그래서 그대로 둡니다.
+        if self.a.warmup > 0:
+            log(f"  워밍업 {self.a.warmup}회 (표본에서 제외)")
+            for w in range(self.a.warmup):
+                t1 = self.clock_ns()
+                await self._net_delay(uplink=True)
+                writer.write(P.encode(P.time_req(-1 - w, t1)))
+                await writer.drain()
+                await reader.readline()
+                await self._net_delay(uplink=False)
+
         samples: list[cs.TimeSample] = []
         for seq in range(self.a.probes):
             t1 = self.clock_ns()
@@ -142,6 +158,8 @@ class SlaveSim:
             if resp.get("type") != P.T.TIME_RESP:
                 log(f"  seq={seq} 예상과 다른 응답: {resp.get('type')}")
                 continue
+            if int(resp["seq"]) < 0:
+                continue   # 뒤늦게 온 워밍업 응답 방어
             samples.append(cs.TimeSample(
                 seq=int(resp["seq"]), t1=int(resp["t1"]),
                 t2=int(resp["t2"]), t3=int(resp["t3"]), t4=t4))
@@ -150,6 +168,7 @@ class SlaveSim:
                 await asyncio.sleep(self.a.gap_ms / 1000.0)
 
         self.est = cs.estimate(samples, best_k=self.a.best_k)
+        self.prof = cs.rtt_profile(samples)
         self.offset_ns = self.est.offset_ns
 
         print()
@@ -157,6 +176,13 @@ class SlaveSim:
         for ln in self.est.summary_lines():
             log("  " + ln)
         log(f"  판정: {self.est.verdict()}")
+
+        # ★ RTT 분포 — "왕복을 늘려서 될 일인가"를 알려줍니다
+        log("")
+        log("  " + self.prof.summary_line())
+        for ln in self.prof.histogram_lines():
+            log("  " + ln)
+        log(f"  분포 판정[{self.prof.shape}]: {self.prof.diagnosis}")
 
         # 정답을 알고 있으면 채점
         if self.fake_offset_ns:
@@ -364,7 +390,10 @@ def main() -> int:
     ap.add_argument("--device-id", default=None)
     ap.add_argument("--probes", type=int, default=cs.DEFAULT_PROBE_COUNT)
     ap.add_argument("--best-k", type=int, default=cs.DEFAULT_BEST_K)
-    ap.add_argument("--gap-ms", type=float, default=5.0,
+    ap.add_argument("--warmup", type=int, default=cs.DEFAULT_WARMUP_COUNT,
+                    help="측정 전에 버리는 왕복 횟수 (WiFi 무선 기동용). "
+                         "아이폰 앱과 같은 절차를 돌리기 위해 시뮬레이터에도 있습니다")
+    ap.add_argument("--gap-ms", type=float, default=float(cs.DEFAULT_PROBE_GAP_MS),
                     help="왕복 사이 간격")
     ap.add_argument("--fake-offset-ms", type=float, default=0.0,
                     help="가짜 클럭 오프셋 주입 (추정기 채점용)")

@@ -20,7 +20,9 @@ struct SyncView: View {
             VStack(alignment: .leading, spacing: 14) {
                 verdictCard
                 if let e = client.estimate { detailCard(e) }
+                if let p = client.profile { profileCard(p) }
                 phaseCard
+                optionsCard
                 mastersCard
                 manualCard
                 explainCard
@@ -108,6 +110,101 @@ struct SyncView: View {
             + "크면 시계가 불안정하다는 뜻입니다."
     }
 
+    // MARK: - RTT 분포
+
+    /// ★ 이 카드가 "다음에 무엇을 할지"를 알려줍니다.
+    ///
+    /// 최소 RTT 숫자 하나로는 두 상황을 구분할 수 없습니다.
+    ///   · 이미 물리적 바닥 -> 왕복을 늘려도 소용없다. 경로를 바꿔야 한다.
+    ///   · 표본 부족        -> 왕복을 늘리면 내려간다.
+    /// p0 와 p50 의 간격이 그걸 알려줍니다.
+    private func profileCard(_ p: RttProfile) -> some View {
+        Card(title: "RTT 분포 — 다음에 할 일") {
+            Text(p.diagnosis)
+                .font(.footnote)
+                .foregroundStyle(p.shape == .narrow ? .orange : .primary)
+
+            Divider().padding(.vertical, 4)
+
+            KV("최소 (p0)", String(format: "%.3f ms", p.p0Ms))
+            KV("하위 10%", String(format: "%.3f ms", p.p10Ms))
+            KV("중앙값 (p50)", String(format: "%.3f ms", p.p50Ms))
+            KV("상위 10% (p90)", String(format: "%.3f ms", p.p90Ms))
+            KV("최대", String(format: "%.3f ms", p.p100Ms))
+
+            if !p.histogramLines.isEmpty {
+                Text(p.histogramLines.joined(separator: "\n"))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 6)
+            }
+
+            Text("목표선: 최소 RTT 4 ms 미만이면 오차 상한 2 ms 미만입니다.")
+                .font(.caption2).foregroundStyle(.secondary).padding(.top, 4)
+        }
+    }
+
+    // MARK: - 측정 설정
+
+    private var optionsCard: some View {
+        Card(title: "측정 설정") {
+            Picker("왕복 횟수", selection: Binding(
+                get: { client.options.probeCount },
+                set: { client.options.probeCount = $0 })) {
+                    Text("40").tag(40)
+                    Text("120").tag(120)
+                    Text("400").tag(400)
+                    Text("1000").tag(1000)
+                }
+                .pickerStyle(.segmented)
+
+            Text("왕복 횟수")
+                .font(.caption2).foregroundStyle(.secondary)
+
+            Picker("간격", selection: Binding(
+                get: { client.options.gapMs },
+                set: { client.options.gapMs = $0 })) {
+                    Text("연사").tag(0)
+                    Text("2 ms").tag(2)
+                    Text("5 ms").tag(5)
+                }
+                .pickerStyle(.segmented)
+                .padding(.top, 6)
+
+            Text("왕복 사이 간격. 연사가 기본입니다 — 쉬면 iOS 가 WiFi 무선을 "
+                 + "절전시켜서 다음 패킷이 느려집니다. 5 ms 는 2026-09-24 측정과 "
+                 + "같은 조건이라 비교 기준선으로 남겼습니다.")
+                .font(.caption2).foregroundStyle(.secondary)
+
+            Picker("워밍업", selection: Binding(
+                get: { client.options.warmupCount },
+                set: { client.options.warmupCount = $0 })) {
+                    Text("없음").tag(0)
+                    Text("10회").tag(10)
+                    Text("30회").tag(30)
+                }
+                .pickerStyle(.segmented)
+                .padding(.top, 6)
+
+            Text("측정 전에 버리는 왕복. 무선을 미리 깨웁니다.")
+                .font(.caption2).foregroundStyle(.secondary)
+
+            Divider().padding(.vertical, 6)
+
+            Text("""
+                 ★ 최소 RTT 를 더 줄이려면 (효과가 큰 순서)
+
+                 1. PC 를 **유선 랜**에 연결하세요. PC 도 WiFi 면 왕복 한 번에
+                    공중을 4번 건너갑니다(폰→AP→PC→AP→폰). 유선이면 2번입니다.
+                    이게 가장 큰 차이를 만듭니다.
+                 2. 폰을 **5GHz** WiFi 에 연결하세요. 2.4GHz 는 혼잡해서 느립니다.
+                 3. 공유기에 가까이 가세요.
+                 4. 왕복 횟수를 늘리세요 (위 분포가 '꼬리가 두껍다'고 할 때만 효과).
+                 """)
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
     // MARK: - 진행 상태
 
     private var phaseCard: some View {
@@ -121,6 +218,8 @@ struct SyncView: View {
                 HStack { ProgressView(); Text("연결 중: \(l)").font(.subheadline) }
             case .handshaking:
                 HStack { ProgressView(); Text("규약 확인 중...").font(.subheadline) }
+            case .warmingUp:
+                HStack { ProgressView(); Text("WiFi 무선 깨우는 중 (워밍업)...").font(.subheadline) }
             case .syncing(let d, let t):
                 VStack(alignment: .leading, spacing: 6) {
                     Text("시각 왕복 \(d) / \(t)").font(.subheadline).monospacedDigit()

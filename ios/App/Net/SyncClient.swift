@@ -31,6 +31,7 @@ final class SyncClient: ObservableObject {
         case browsing
         case connecting(String)
         case handshaking
+        case warmingUp
         case syncing(done: Int, total: Int)
         case finished
         case failed(String)
@@ -49,10 +50,28 @@ final class SyncClient: ObservableObject {
         static func == (a: Master, b: Master) -> Bool { a.id == b.id }
     }
 
+    /// 한 번의 측정에 쓰는 설정. UI 에서 바꿔 실험할 수 있게 밖으로 뺐습니다.
+    ///
+    /// 2026-09-24 실측에서 최소 RTT 4.810 ms 로 목표(4 ms)를 못 맞췄기 때문에,
+    /// 어떤 요인이 지배적인지 사용자가 직접 조합을 돌려볼 수 있어야 합니다.
+    struct Options: Equatable {
+        var probeCount: Int = 120
+        var warmupCount: Int = SyncConfig.warmupCount
+        var gapMs: Int = SyncConfig.probeGapMs
+
+        static let fast     = Options(probeCount: 40,  warmupCount: 5,  gapMs: 0)
+        static let standard = Options(probeCount: 120, warmupCount: 10, gapMs: 0)
+        static let deep     = Options(probeCount: 400, warmupCount: 20, gapMs: 0)
+        /// 이전(2026-09-24) 측정과 같은 조건. 비교 기준선으로 남겨 둡니다.
+        static let legacy   = Options(probeCount: 40,  warmupCount: 0,  gapMs: 5)
+    }
+
     @Published var phase: Phase = .idle
     @Published var masters: [Master] = []
     @Published var estimate: SyncEstimate?
+    @Published var profile: RttProfile?
     @Published var lastServerId: String?
+    @Published var options: Options = .standard
     /// 로컬 네트워크 권한이 거부됐을 가능성 안내
     @Published var localNetworkHint = false
 
@@ -69,10 +88,8 @@ final class SyncClient: ObservableObject {
     private var closedError: Error?
 
     private let deviceId: String
-    private let probeCount: Int
 
-    init(probeCount: Int = SyncConfig.probeCount) {
-        self.probeCount = probeCount
+    init() {
         self.deviceId = SyncClient.stableDeviceId()
     }
 
@@ -172,6 +189,7 @@ final class SyncClient: ObservableObject {
         guard !phase.isBusy || phase == .browsing else { return }
         stopBrowsing()
         estimate = nil
+        profile = nil
         Task { await self.session(endpoint: endpoint, label: label) }
     }
 
@@ -184,7 +202,7 @@ final class SyncClient: ObservableObject {
             phase = .handshaking
 
             // 1) hello
-            try send(HelloMsg(
+            try await send(HelloMsg(
                 deviceId: deviceId,
                 name: UIDevice.current.name,
                 platform: "ios",
@@ -212,21 +230,54 @@ final class SyncClient: ObservableObject {
             lastServerId = ack.serverId
             AppLog.shared.i("Sync", "hello_ack (serverId=\(ack.serverId ?? "?"), impl=\(ack.impl ?? "?"))")
 
-            try send(StatusMsg(state: "idle",
-                               battery: Double(UIDevice.current.batteryLevel),
-                               thermal: thermalName()))
+            try await send(StatusMsg(state: "idle",
+                                     battery: Double(UIDevice.current.batteryLevel),
+                                     thermal: thermalName()))
 
-            // 2) 시각 왕복
+            let opt = options
+            AppLog.shared.i("Sync", "측정 설정: 왕복 \(opt.probeCount)회, 워밍업 \(opt.warmupCount)회, 간격 \(opt.gapMs)ms")
+
+            // ── 2) 워밍업 ────────────────────────────────────────────────────
+            //
+            // ★ 왜 버리는 왕복이 필요한가
+            //
+            // iOS 는 WiFi 무선을 공격적으로 절전시킵니다. 유휴 뒤 첫 패킷은
+            // 무선을 깨우는 시간이 붙어 몇 ms 느립니다. 우리는 **최소** RTT 를
+            // 쓰므로 느린 표본이 섞여도 결과가 나빠지진 않지만, 분포 진단이
+            // 오염되고 무엇보다 "쉬었다 보내면 매번 다시 잠든다"는 문제가 있습니다.
+            // 그래서 워밍업으로 무선을 깨우고, 본 측정은 간격 0 으로 연사합니다.
+            if opt.warmupCount > 0 {
+                phase = .warmingUp
+                for seq in 0..<opt.warmupCount {
+                    let t1 = MonotonicClock.nowNs()
+                    try sendNoWait(WireCodec.encodeTimeReqLine(seq: -1 - seq, t1: t1))
+                    _ = try await nextLine()   // 결과는 버립니다
+                }
+                AppLog.shared.i("Sync", "워밍업 \(opt.warmupCount)회 완료 (표본에서 제외)")
+            }
+
+            // ── 3) 본 측정 ───────────────────────────────────────────────────
             var samples: [TimeSample] = []
-            samples.reserveCapacity(probeCount)
+            samples.reserveCapacity(opt.probeCount)
             let t0 = MonotonicClock.nowNs()
 
-            for seq in 0..<probeCount {
-                phase = .syncing(done: seq, total: probeCount)
+            // ★ UI 갱신을 묶습니다.
+            //
+            // phase 는 @Published 이므로 대입할 때마다 SwiftUI 가 화면을 다시 그립니다.
+            // 매 왕복마다 갱신하면 400회 측정에서 400번 리렌더가 MainActor 를 점유하고,
+            // 그 지연이 "다음 왕복의 t1 을 찍기 전"에 들어가 RTT 를 부풀립니다.
+            // 측정기가 스스로 측정값을 망치는 전형적인 형태입니다.
+            let uiStride = max(1, opt.probeCount / 20)
 
-                // ★ t1 = send 직전
+            for seq in 0..<opt.probeCount {
+                if seq % uiStride == 0 {
+                    phase = .syncing(done: seq, total: opt.probeCount)
+                }
+
+                // ★ t1 = 패킷 조립 직전. 고속 인코더라 여기서 µs 단위만 씁니다.
+                //   JSONEncoder 를 쓰면 이 사이에 수십~수백 µs 가 끼어듭니다.
                 let t1 = MonotonicClock.nowNs()
-                try send(TimeReqMsg(seq: seq, t1: t1))
+                try sendNoWait(WireCodec.encodeTimeReqLine(seq: seq, t1: t1))
 
                 let (line, t4) = try await nextLine()   // ★ t4 = 소켓 콜백에서 찍힌 값
                 let type = try WireCodec.typeOf(line)
@@ -235,15 +286,19 @@ final class SyncClient: ObservableObject {
                     continue
                 }
                 let r = try WireCodec.decode(TimeRespMsg.self, from: line)
+                guard r.seq >= 0 else { continue }   // 뒤늦게 온 워밍업 응답 방어
                 samples.append(TimeSample(seq: r.seq, t1: r.t1, t2: r.t2, t3: r.t3, t4: t4))
 
-                // 왕복 사이에 약간 쉬어야 큐잉 상태가 다양하게 샘플링됩니다
-                try? await Task.sleep(nanoseconds: 5_000_000)
+                if opt.gapMs > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(opt.gapMs) * 1_000_000)
+                }
             }
 
             let elapsed = MonotonicClock.nowNs() - t0
             let est = ClockSync.estimate(samples)
+            let prof = ClockSync.rttProfile(samples)
             estimate = est
+            profile = prof
 
             AppLog.shared.i("Sync", String(
                 format: "동기 완료 %d회 %.2f초 | 오프셋 %+.3fms | 최소RTT %.3fms | 상한 %.3fms | 흔들림 %.3fms",
@@ -251,11 +306,21 @@ final class SyncClient: ObservableObject {
                 est.offsetMs, est.minRttMs, est.uncertaintyMs, est.spreadMs))
             AppLog.shared.i("Sync", "판정: \(est.verdict())")
 
-            // 3) 결과 보고
-            try send(TimeResultMsg(est))
-            try send(StatusMsg(state: "synced",
-                               battery: Double(UIDevice.current.batteryLevel),
-                               thermal: thermalName()))
+            // ★ 분포를 로그에 남깁니다. 이게 다음 행동을 결정합니다.
+            AppLog.shared.i("Sync", prof.summaryLine)
+            for l in prof.histogramLines { AppLog.shared.i("Sync", l) }
+            AppLog.shared.i("Sync", "분포 판정[\(prof.shape.rawValue)]: \(prof.diagnosis)")
+
+            // ── 4) 결과 보고 ────────────────────────────────────────────────
+            //
+            // ★ await 로 송신 완료를 기다립니다.
+            //   기다리지 않고 close() 를 부르면 연결이 취소되면서
+            //   "송신 실패: POSIXErrorCode(rawValue: 89): Operation canceled" 가 납니다.
+            //   (2026-09-24 실측 로그에서 실제로 발생했습니다)
+            try await send(TimeResultMsg(est))
+            try await send(StatusMsg(state: "synced",
+                                     battery: Double(UIDevice.current.batteryLevel),
+                                     thermal: thermalName()))
 
             phase = .finished
         } catch {
@@ -360,12 +425,40 @@ final class SyncClient: ObservableObject {
         }
     }
 
-    private func send<T: Encodable>(_ msg: T) throws {
+    /// 송신 완료를 **기다리는** 버전. hello / status / time_result 처럼
+    /// "반드시 도착해야 하는" 메시지에 씁니다.
+    ///
+    /// 기다리지 않으면 바로 뒤의 close() 가 연결을 취소하면서 전송이 잘립니다.
+    /// (POSIXErrorCode 89: Operation canceled)
+    private func send<T: Encodable>(_ msg: T) async throws {
         guard let c = conn else {
             throw NSError(domain: "Sync", code: 5, userInfo: [
                 NSLocalizedDescriptionKey: "연결이 없습니다"])
         }
         let data = try WireCodec.encodeLine(msg)
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            // contentProcessed 는 정확히 한 번 호출되므로 continuation 규칙을 지킵니다.
+            c.send(content: data, completion: .contentProcessed { err in
+                if let err {
+                    AppLog.shared.e("Sync", "송신 실패: \(err)")
+                    cont.resume(throwing: err)
+                } else {
+                    cont.resume()
+                }
+            })
+        }
+    }
+
+    /// 완료를 기다리지 않는 버전. **시각 왕복 전용**입니다.
+    ///
+    /// 여기서 기다리면 t1 이후에 async 홉이 하나 더 끼어들 여지가 생깁니다.
+    /// time_req 는 응답(time_resp)이 곧바로 오므로 도착 여부는 그걸로 확인됩니다.
+    /// 응답이 안 오면 nextLine() 이 영원히 기다리는 대신 연결 오류로 깨집니다.
+    private func sendNoWait(_ data: Data) throws {
+        guard let c = conn else {
+            throw NSError(domain: "Sync", code: 5, userInfo: [
+                NSLocalizedDescriptionKey: "연결이 없습니다"])
+        }
         c.send(content: data, completion: .contentProcessed { err in
             if let err { AppLog.shared.e("Sync", "송신 실패: \(err)") }
         })

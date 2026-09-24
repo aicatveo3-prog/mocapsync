@@ -28,6 +28,20 @@ public enum SyncConfig {
     public static let targetNs: Int64 = 2 * NS.perMilli
     /// 왕복 횟수 (설계: 20~50회)
     public static let probeCount = 40
+    /// ★ 측정 전에 버리는 왕복 횟수.
+    ///
+    /// iOS 는 WiFi 무선을 공격적으로 절전시킵니다. 유휴 상태에서 첫 패킷은
+    /// 무선을 깨우는 시간이 붙어 몇 ms 느립니다. 그 표본이 섞이면 최소 RTT 는
+    /// 안 나빠지지만(최소값이니까) 분포 해석이 오염됩니다.
+    /// 더 중요하게는, 왕복 사이 간격이 길면 매번 다시 절전에 들어가므로
+    /// 워밍업 + 무간격 연사가 최소 RTT 를 실제로 낮춥니다.
+    public static let warmupCount = 10
+    /// 왕복 사이 간격(ms). 0 = 연사.
+    ///
+    /// 처음에는 5ms 였습니다. "큐잉 상태를 다양하게 샘플링한다"는 의도였지만,
+    /// 우리는 **최소** RTT 만 쓰기 때문에 다양성은 이득이 없고
+    /// 무선이 절전에 드는 손해만 있습니다. 기본값을 0 으로 바꿨습니다.
+    public static let probeGapMs = 0
     /// 최종 오프셋을 뽑을 최소-RTT 샘플 개수
     public static let bestK = 1
     /// spread 계산에 쓸 샘플 개수
@@ -269,5 +283,181 @@ public extension ClockSync {
             maxIntervalMs: (d.max() ?? 0).ms,
             estimatedFps: med > 0 ? 1e9 / Double(med) : 0,
             suspectedDrops: drops)
+    }
+}
+
+// ── RTT 분포 (진단 전용) ─────────────────────────────────────────────────────
+//
+// ★ 왜 필요한가
+//
+// 최소 RTT 하나만 보면 다음 두 상황을 **구분할 수 없습니다**.
+//
+//   (가) 이미 물리적 바닥에 도달했다. 왕복을 1000번 해도 더 안 내려간다.
+//        -> 코드로는 해결 불가. 네트워크 경로를 바꿔야 한다 (유선 랜, 5GHz).
+//
+//   (나) 표본이 부족해서 운 나쁘게 높게 나왔다. 분포의 꼬리가 두껍다.
+//        -> 왕복 횟수를 늘리면 최소값이 내려간다. 코드로 해결 가능.
+//
+// 4.810 ms 라는 숫자 하나로는 어느 쪽인지 모릅니다. p0 와 p50 의 간격을 보면
+// 압니다. 그래서 이걸 만들었습니다.
+//
+// 이 계산은 오프셋 추정에 **전혀 영향을 주지 않습니다**. 순수 진단용입니다.
+// (따라서 Python 쪽에 대응 구현이 없습니다. clocksync.py 와의 동작 일치
+//  요구사항은 SyncEstimate 계산에만 적용됩니다)
+// ─────────────────────────────────────────────────────────────────────────────
+
+public struct RttProfile: Equatable, Sendable {
+    public let count: Int
+    public let p0Ns: Int64
+    public let p10Ns: Int64
+    public let p50Ns: Int64
+    public let p90Ns: Int64
+    public let p100Ns: Int64
+    /// `bucketEdgesMs` 로 나눈 구간별 개수. 길이는 edges.count + 1 (마지막은 초과분).
+    public let buckets: [Int]
+
+    /// 히스토그램 경계 (ms).
+    ///
+    /// 1 ms 아래까지 촘촘히 둡니다. PC 를 유선 랜으로 바꾸면 RTT 가 1~2 ms 로
+    /// 떨어질 수 있는데, 경계가 2 ms 부터면 그 구간이 한 칸에 뭉쳐서
+    /// 개선 여부를 볼 수 없습니다.
+    /// 4 ms 는 목표 경계선이므로 반드시 경계에 있어야 합니다 (상한 2 ms).
+    public static let bucketEdgesMs: [Double] = [0.5, 1, 2, 3, 4, 5, 6, 8, 12, 20, 40]
+
+    public var p0Ms: Double { p0Ns.ms }
+    public var p10Ms: Double { p10Ns.ms }
+    public var p50Ms: Double { p50Ns.ms }
+    public var p90Ms: Double { p90Ns.ms }
+    public var p100Ms: Double { p100Ns.ms }
+
+    public static let empty = RttProfile(
+        count: 0, p0Ns: 0, p10Ns: 0, p50Ns: 0, p90Ns: 0, p100Ns: 0,
+        buckets: Array(repeating: 0, count: RttProfile.bucketEdgesMs.count + 1))
+
+    public init(count: Int, p0Ns: Int64, p10Ns: Int64, p50Ns: Int64,
+                p90Ns: Int64, p100Ns: Int64, buckets: [Int]) {
+        self.count = count
+        self.p0Ns = p0Ns
+        self.p10Ns = p10Ns
+        self.p50Ns = p50Ns
+        self.p90Ns = p90Ns
+        self.p100Ns = p100Ns
+        self.buckets = buckets
+    }
+
+    /// p50 이 p0 보다 얼마나 높은가. 0 이면 분포가 한 점에 모인 것.
+    public var headroom: Double {
+        guard p0Ns > 0 else { return 0 }
+        return Double(p50Ns - p0Ns) / Double(p0Ns)
+    }
+
+    /// 분포의 넓이/좁음. 셋 중 하나.
+    public enum Shape: String, Sendable {
+        case tooFewSamples
+        case narrow      // 바닥 도달
+        case moderate
+        case heavyTail   // 왕복 늘리면 이득
+    }
+
+    public var shape: Shape {
+        if count < 5 { return .tooFewSamples }
+        if headroom < 0.25 { return .narrow }
+        if headroom < 1.0 { return .moderate }
+        return .heavyTail
+    }
+
+    /// ★ "다음에 무엇을 해야 하는가"를 알려주는 문장.
+    /// 사용자가 실기기에서 보는 유일한 결론이므로 행동 지시로 씁니다.
+    public var diagnosis: String {
+        switch shape {
+        case .tooFewSamples:
+            return "표본이 \(count)개뿐입니다. 판정할 수 없습니다."
+        case .narrow:
+            return String(format:
+                "분포가 좁습니다 (중앙값이 최소값의 %.0f%%). 이미 이 경로의 물리적 바닥입니다. "
+                + "왕복 횟수를 늘려도 최소 RTT 는 거의 안 내려갑니다. "
+                + "→ 네트워크 경로를 바꿔야 합니다: PC 를 유선 랜에 연결, WiFi 는 5GHz 사용.",
+                (1 + headroom) * 100)
+        case .moderate:
+            return String(format:
+                "분포가 보통입니다 (중앙값이 최소값의 %.0f%%). "
+                + "왕복 횟수를 2~5배로 늘리면 최소 RTT 가 조금 더 내려갈 여지가 있습니다. "
+                + "그것만으로 부족하면 유선 랜을 쓰세요.",
+                (1 + headroom) * 100)
+        case .heavyTail:
+            return String(format:
+                "꼬리가 두껍습니다 (중앙값이 최소값의 %.0f%%). 간헐적 지연이 큽니다. "
+                + "왕복 횟수를 늘리면 최소 RTT 가 의미 있게 내려갈 가능성이 높습니다. "
+                + "공유기 2.4GHz 혼잡과 절전 설정을 의심하세요.",
+                (1 + headroom) * 100)
+        }
+    }
+
+    /// 로그에 넣을 한 줄 요약
+    public var summaryLine: String {
+        String(format: "RTT n=%d  p0=%.3f p10=%.3f p50=%.3f p90=%.3f max=%.3f ms",
+               count, p0Ms, p10Ms, p50Ms, p90Ms, p100Ms)
+    }
+
+    /// 로그에 넣을 히스토그램 (텍스트 막대)
+    public var histogramLines: [String] {
+        guard count > 0 else { return [] }
+        let edges = RttProfile.bucketEdgesMs
+        var out: [String] = []
+        for (i, n) in buckets.enumerated() {
+            if n == 0 { continue }
+            let label: String
+            if i == 0 {
+                label = String(format: "      ~%5.1f", edges[0])
+            } else if i == buckets.count - 1 {
+                label = String(format: "%5.1f~      ", edges[edges.count - 1])
+            } else {
+                label = String(format: "%5.1f~%5.1f", edges[i - 1], edges[i])
+            }
+            let bar = String(repeating: "#", count: max(1, n * 30 / count))
+            // String(format:) 의 %@ 는 Swift String 브리징에 의존하므로
+            // 보간으로 조립합니다. 숫자만 포맷을 씁니다.
+            out.append("  \(label) ms | \(String(format: "%3d", n))  \(bar)")
+        }
+        return out
+    }
+}
+
+public extension ClockSync {
+
+    /// RTT 분포를 요약합니다. 진단 전용.
+    static func rttProfile(_ samples: [TimeSample]) -> RttProfile {
+        let rtts = samples.filter { $0.isSane }.map(\.rttNs).sorted()
+        guard !rtts.isEmpty else { return .empty }
+
+        let edges = RttProfile.bucketEdgesMs
+        var buckets = Array(repeating: 0, count: edges.count + 1)
+        for r in rtts {
+            let ms = r.ms
+            var placed = false
+            for (i, e) in edges.enumerated() where ms < e {
+                buckets[i] += 1
+                placed = true
+                break
+            }
+            if !placed { buckets[edges.count] += 1 }
+        }
+
+        return RttProfile(
+            count: rtts.count,
+            p0Ns: rtts[0],
+            p10Ns: percentile(sorted: rtts, 10),
+            p50Ns: percentile(sorted: rtts, 50),
+            p90Ns: percentile(sorted: rtts, 90),
+            p100Ns: rtts[rtts.count - 1],
+            buckets: buckets)
+    }
+
+    /// 최근접 순위 백분위. 보간하지 않으므로 항상 실제 관측값 중 하나를 돌려줍니다.
+    /// (보간하면 "실제로 관측되지 않은 RTT"가 나와서 해석이 애매해집니다)
+    static func percentile(sorted xs: [Int64], _ p: Double) -> Int64 {
+        guard !xs.isEmpty else { return 0 }
+        let idx = Int((p / 100.0 * Double(xs.count - 1)).rounded())
+        return xs[min(max(idx, 0), xs.count - 1)]
     }
 }

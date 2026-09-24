@@ -30,6 +30,7 @@ Swift 를 컴파일할 수 없습니다. 그래서 계산 부분을 순수 함�
 
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass, asdict
 from typing import Iterable, Sequence
@@ -215,6 +216,162 @@ def estimate(samples: Iterable[TimeSample],
         samples_used=k,
         samples_rejected=rejected,
         median_rtt_ns=int(statistics.median([s.rtt_ns for s in by_rtt])),
+    )
+
+
+# ── RTT 분포 (진단 전용) ──────────────────────────────────────────────────────
+#
+# ★ 왜 필요한가
+#
+# 최소 RTT 하나만 보면 다음 두 상황을 구분할 수 없습니다.
+#
+#   (가) 이미 물리적 바닥이다. 왕복을 1000번 해도 더 안 내려간다.
+#        -> 코드로는 해결 불가. 경로를 바꿔야 한다 (유선 랜, 5GHz).
+#   (나) 표본이 부족해서 운 나쁘게 높게 나왔다. 꼬리가 두껍다.
+#        -> 왕복 횟수를 늘리면 최소값이 내려간다. 코드로 해결 가능.
+#
+# 2026-09-24 아이폰 11 실측: 최소 RTT 4.810 ms -> 상한 2.405 ms (목표 2 ms 미달).
+# 이 숫자 하나로는 어느 쪽인지 모릅니다. p0 와 p50 의 간격을 보면 압니다.
+#
+# 이 계산은 오프셋 추정에 영향을 주지 않습니다. 순수 진단용입니다.
+# ios/Sources/MocapSyncCore/ClockSync.swift 의 RttProfile 과 **같은 값**을 내야
+# 합니다. 그래서 백분위를 round() 가 아니라 floor(x+0.5) 로 계산합니다
+# (Python round 는 짝수 반올림, Swift .rounded() 는 0에서 먼 쪽 반올림 — 다릅니다).
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: 히스토그램 경계 (ms).
+#
+#  1 ms 아래까지 촘촘히 둡니다. PC 를 유선 랜으로 바꾸면 RTT 가 1~2 ms 로
+#  떨어질 수 있는데, 경계가 2 ms 부터면 그 구간이 한 칸에 뭉쳐서 개선 여부를
+#  볼 수 없습니다. 4 ms 는 목표 경계선이므로 반드시 경계에 있어야 합니다.
+RTT_BUCKET_EDGES_MS = [0.5, 1, 2, 3, 4, 5, 6, 8, 12, 20, 40]
+
+#: 측정 전에 버리는 왕복 횟수. WiFi 무선을 깨우는 용도.
+DEFAULT_WARMUP_COUNT = 10
+
+#: 왕복 사이 간격(ms). 0 = 연사.
+#  처음엔 5ms 였지만 우리는 **최소** RTT 만 쓰므로 표본 다양성은 이득이 없고,
+#  쉬는 동안 무선이 절전에 드는 손해만 있습니다.
+DEFAULT_PROBE_GAP_MS = 0
+
+
+def percentile_nearest(sorted_xs: Sequence[int], p: float) -> int:
+    """
+    최근접 순위 백분위. 보간하지 않으므로 항상 실제 관측값 중 하나를 돌려줍니다.
+    (보간하면 관측되지 않은 RTT 가 나와서 해석이 애매해집니다)
+    """
+    if not sorted_xs:
+        return 0
+    n = len(sorted_xs)
+    idx = int(math.floor(p / 100.0 * (n - 1) + 0.5))
+    return sorted_xs[min(max(idx, 0), n - 1)]
+
+
+@dataclass(frozen=True)
+class RttProfile:
+    count: int
+    p0_ns: int
+    p10_ns: int
+    p50_ns: int
+    p90_ns: int
+    p100_ns: int
+    #: RTT_BUCKET_EDGES_MS 로 나눈 구간별 개수. 길이는 edges+1 (마지막은 초과분).
+    buckets: tuple[int, ...]
+
+    @property
+    def headroom(self) -> float:
+        """p50 이 p0 보다 얼마나 높은가. 0 이면 분포가 한 점에 모인 것."""
+        if self.p0_ns <= 0:
+            return 0.0
+        return (self.p50_ns - self.p0_ns) / self.p0_ns
+
+    @property
+    def shape(self) -> str:
+        if self.count < 5:
+            return "tooFewSamples"
+        if self.headroom < 0.25:
+            return "narrow"
+        if self.headroom < 1.0:
+            return "moderate"
+        return "heavyTail"
+
+    @property
+    def diagnosis(self) -> str:
+        """★ '다음에 무엇을 해야 하는가'. 행동 지시로 씁니다."""
+        pct = (1 + self.headroom) * 100
+        s = self.shape
+        if s == "tooFewSamples":
+            return f"표본이 {self.count}개뿐입니다. 판정할 수 없습니다."
+        if s == "narrow":
+            return (f"분포가 좁습니다 (중앙값이 최소값의 {pct:.0f}%). "
+                    "이미 이 경로의 물리적 바닥입니다. 왕복 횟수를 늘려도 "
+                    "최소 RTT 는 거의 안 내려갑니다. → 네트워크 경로를 바꿔야 "
+                    "합니다: PC 를 유선 랜에 연결, WiFi 는 5GHz 사용.")
+        if s == "moderate":
+            return (f"분포가 보통입니다 (중앙값이 최소값의 {pct:.0f}%). "
+                    "왕복 횟수를 2~5배로 늘리면 최소 RTT 가 조금 더 내려갈 "
+                    "여지가 있습니다. 그것만으로 부족하면 유선 랜을 쓰세요.")
+        return (f"꼬리가 두껍습니다 (중앙값이 최소값의 {pct:.0f}%). "
+                "간헐적 지연이 큽니다. 왕복 횟수를 늘리면 최소 RTT 가 의미 있게 "
+                "내려갈 가능성이 높습니다. 공유기 2.4GHz 혼잡과 절전 설정을 "
+                "의심하세요.")
+
+    def summary_line(self) -> str:
+        m = NS_PER_MS
+        return (f"RTT n={self.count}  p0={self.p0_ns / m:.3f} "
+                f"p10={self.p10_ns / m:.3f} p50={self.p50_ns / m:.3f} "
+                f"p90={self.p90_ns / m:.3f} max={self.p100_ns / m:.3f} ms")
+
+    def histogram_lines(self) -> list[str]:
+        if self.count == 0:
+            return []
+        edges = RTT_BUCKET_EDGES_MS
+        out = []
+        for i, n in enumerate(self.buckets):
+            if n == 0:
+                continue
+            if i == 0:
+                label = f"      ~{edges[0]:5.1f}"
+            elif i == len(self.buckets) - 1:
+                label = f"{edges[-1]:5.1f}~      "
+            else:
+                label = f"{edges[i - 1]:5.1f}~{edges[i]:5.1f}"
+            bar = "#" * max(1, n * 30 // self.count)
+            out.append(f"  {label} ms | {n:3d}  {bar}")
+        return out
+
+
+EMPTY_RTT_PROFILE = RttProfile(
+    count=0, p0_ns=0, p10_ns=0, p50_ns=0, p90_ns=0, p100_ns=0,
+    buckets=tuple([0] * (len(RTT_BUCKET_EDGES_MS) + 1)),
+)
+
+
+def rtt_profile(samples: Iterable[TimeSample]) -> RttProfile:
+    """RTT 분포를 요약합니다. 진단 전용."""
+    rtts = sorted(s.rtt_ns for s in samples if s.is_sane())
+    if not rtts:
+        return EMPTY_RTT_PROFILE
+
+    edges = RTT_BUCKET_EDGES_MS
+    buckets = [0] * (len(edges) + 1)
+    for r in rtts:
+        ms = r / NS_PER_MS
+        for i, e in enumerate(edges):
+            if ms < e:
+                buckets[i] += 1
+                break
+        else:
+            buckets[len(edges)] += 1
+
+    return RttProfile(
+        count=len(rtts),
+        p0_ns=rtts[0],
+        p10_ns=percentile_nearest(rtts, 10),
+        p50_ns=percentile_nearest(rtts, 50),
+        p90_ns=percentile_nearest(rtts, 90),
+        p100_ns=rtts[-1],
+        buckets=tuple(buckets),
     )
 
 
