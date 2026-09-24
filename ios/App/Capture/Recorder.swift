@@ -532,11 +532,12 @@ extension Recorder: AVCaptureVideoDataOutputSampleBufferDelegate {
         droppedCount += 1
         // ★ 버린 이유를 읽습니다. 발열 스로틀링인지 처리 지연인지 구분되어야
         //   원인을 고칠 수 있습니다. 숫자만 세면 원인을 모릅니다.
-        let reason: CFString? = CMGetAttachment(
+        // CMGetAttachment 는 CFTypeRef? 를 줍니다. CFString 은 String 으로 브리징됩니다.
+        let raw = CMGetAttachment(
             sampleBuffer,
             key: kCMSampleBufferAttachmentKey_DroppedFrameReason,
             attachmentModeOut: nil)
-        AppLog.shared.w("Rec", "카메라가 프레임 버림 (누적 \(droppedCount)) "
-                        + "이유=\(reason.map { $0 as String } ?? "?")")
+        let reason = (raw as? String) ?? "?"
+        AppLog.shared.w("Rec", "카메라가 프레임 버림 (누적 \(droppedCount)) 이유=\(reason)")
     }
 }
