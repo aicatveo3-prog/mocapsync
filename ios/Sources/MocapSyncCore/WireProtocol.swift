@@ -100,7 +100,15 @@ public struct TimeResultMsg: Encodable {
     /// 다르면 두 구현이 갈라졌다는 뜻이므로 경고를 찍습니다.
     public let rttShape: String
 
-    public init(_ e: SyncEstimate, _ p: RttProfile = .empty) {
+    /// ★ 이 숫자를 만든 측정 설정. 사람이 읽는 기록용 문자열입니다.
+    ///
+    /// 왜 문자열 하나인가: 설정 항목이 늘 때마다 규약에 키를 추가하면 양쪽
+    /// 구현과 테스트를 매번 고쳐야 합니다. 그리고 진짜 목적은
+    /// "이 숫자가 어떤 조건에서 나왔는지"를 **사용자가 말해주지 않아도**
+    /// 마스터 로그에 남기는 것입니다.
+    public let config: String
+
+    public init(_ e: SyncEstimate, _ p: RttProfile = .empty, config: String = "") {
         self.offsetNs = e.offsetNs
         self.minRttNs = e.minRttNs
         self.uncertaintyNs = e.uncertaintyNs
@@ -114,6 +122,7 @@ public struct TimeResultMsg: Encodable {
         self.rttP90Ns = p.p90Ns
         self.rttP100Ns = p.p100Ns
         self.rttShape = p.shape.rawValue
+        self.config = config
     }
 }
 

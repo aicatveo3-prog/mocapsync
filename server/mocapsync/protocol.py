@@ -103,7 +103,7 @@ def time_resp(seq: int, t1: int, t2: int, t3: int) -> dict:
     return {"type": T.TIME_RESP, "seq": seq, "t1": t1, "t2": t2, "t3": t3}
 
 
-def time_result(est, prof=None) -> dict:
+def time_result(est, prof=None, config: str = "") -> dict:
     """
     est:  clocksync.SyncEstimate
     prof: clocksync.RttProfile | None
@@ -133,6 +133,9 @@ def time_result(est, prof=None) -> dict:
         "rttP90Ns": p.p90_ns,
         "rttP100Ns": p.p100_ns,
         "rttShape": p.shape,
+        # ★ 이 숫자를 만든 측정 설정. 사람이 읽는 기록용.
+        #   사용자가 "무슨 설정으로 쟀는지" 말해주지 않아도 로그에 남습니다.
+        "config": config,
     }
 
 

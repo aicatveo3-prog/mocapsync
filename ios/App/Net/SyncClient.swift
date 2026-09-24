@@ -44,6 +44,50 @@ final class SyncClient: ObservableObject {
         }
     }
 
+    /// 통신 우선순위 = WiFi 접근 등급(WMM/802.11e).
+    ///
+    /// ★ 왜 이걸 고를 수 있게 하는가
+    ///
+    /// 2026-09-24 19:10 실측 분포에서 최대 RTT 가 **144 ms** 였습니다.
+    /// 공유기는 약 100 ms 주기로 비콘을 보내고, 절전 중인 기기는 그 주기를
+    /// 기다려야 버퍼된 데이터를 받습니다. 144 ms 는 그 패턴입니다.
+    /// 즉 폰의 WiFi 무선이 측정 중에도 졸고 있었습니다.
+    ///
+    /// 음성 등급(AC_VO)은 경쟁 대기시간이 가장 짧고, 무엇보다 절전 버퍼링을
+    /// 우회하는 경로를 타는 경우가 많습니다. 통화가 100 ms 씩 끊기면 안 되니까요.
+    ///
+    /// ※ 검증되지 않은 가정입니다. 그래서 고정하지 않고 **고를 수 있게** 만들어
+    ///   실기기에서 두 등급을 비교 측정합니다.
+    enum NetPriority: String, Equatable, CaseIterable, Identifiable {
+        /// 지금까지 쓴 값. 데이터 응답성 등급.
+        case responsiveData
+        /// 음성통화 등급. 경쟁 대기 최소 + 절전 버퍼링 우회 기대.
+        case interactiveVoice
+
+        var id: String { rawValue }
+
+        var nwValue: NWParameters.ServiceClass {
+            switch self {
+            case .responsiveData:   return .responsiveData
+            case .interactiveVoice: return .interactiveVoice
+            }
+        }
+        var label: String {
+            switch self {
+            case .responsiveData:   return "표준"
+            case .interactiveVoice: return "음성우선"
+            }
+        }
+        var help: String {
+            switch self {
+            case .responsiveData:
+                return "지금까지 측정한 등급입니다. 비교 기준선."
+            case .interactiveVoice:
+                return "★ 음성통화 등급. WiFi 절전 버퍼링을 우회할 것으로 기대합니다 (최대 144ms 의 원인). 미검증."
+            }
+        }
+    }
+
     struct Master: Identifiable, Equatable {
         let id: String        // 표시 이름
         let endpoint: NWEndpoint
@@ -81,6 +125,20 @@ final class SyncClient: ObservableObject {
         var burstGapMs: Int = 300
         /// 각 버스트 시작 시 버리는 왕복 수
         var burstWarmup: Int = 3
+
+        /// 통신 우선순위 (WiFi 접근 등급)
+        var priority: NetPriority = .responsiveData
+
+        /// 측정 설정을 한 문자열로. 마스터에게 보내 어떤 조건의 숫자인지 기록합니다.
+        ///
+        /// ★ 왜 문자열 하나로 보내는가: 설정 항목이 늘어날 때마다 규약에 키를
+        ///   추가하면 양쪽 구현과 테스트를 매번 고쳐야 합니다. 이건 사람이 읽는
+        ///   기록용이라 한 덩어리로 보냅니다.
+        ///   사용자가 "무슨 설정으로 쟀는지" 말해주지 않아도 로그에 남습니다.
+        var configString: String {
+            let burst = burstSize > 0 ? "\(burstSize)x\(burstGapMs)ms" : "단일연사"
+            return "\(probeCount)회/\(burst)/워밍업\(warmupCount)+\(burstWarmup)/간격\(gapMs)ms/\(priority.label)"
+        }
 
         /// 측정에 걸릴 대략적인 시간(초). UI 안내용.
         var estimatedSeconds: Double {
@@ -379,7 +437,7 @@ final class SyncClient: ObservableObject {
             //   기다리지 않고 close() 를 부르면 연결이 취소되면서
             //   "송신 실패: POSIXErrorCode(rawValue: 89): Operation canceled" 가 납니다.
             //   (2026-09-24 실측 로그에서 실제로 발생했습니다)
-            try await send(TimeResultMsg(est, prof))
+            try await send(TimeResultMsg(est, prof, config: opt.configString))
             try await send(StatusMsg(state: "synced",
                                      battery: Double(UIDevice.current.batteryLevel),
                                      thermal: thermalName()))
@@ -403,7 +461,9 @@ final class SyncClient: ObservableObject {
 
         let params = NWParameters(tls: nil, tcp: tcp)
         params.includePeerToPeer = true
-        params.serviceClass = .responsiveData
+        // ★ WiFi 접근 등급. 절전 버퍼링(최대 144ms 관측)을 우회하는지 비교 측정합니다.
+        params.serviceClass = options.priority.nwValue
+        AppLog.shared.i("Sync", "통신 우선순위: \(options.priority.label) (\(options.priority.rawValue))")
 
         let c = NWConnection(to: endpoint, using: params)
         conn = c

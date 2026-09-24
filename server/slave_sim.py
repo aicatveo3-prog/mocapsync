@@ -216,7 +216,12 @@ class SlaveSim:
         print()
 
         # 3) 결과 보고
-        writer.write(P.encode(P.time_result(self.est, self.prof)))
+        cfg = (f"{self.a.probes}회/"
+               + (f"{self.a.burst_size}x{self.a.burst_gap_ms:g}ms"
+                  if self.a.burst_size > 0 else "단일연사")
+               + f"/워밍업{self.a.warmup}+{self.a.burst_warmup}"
+               + f"/간격{self.a.gap_ms:g}ms/pysim")
+        writer.write(P.encode(P.time_result(self.est, self.prof, cfg)))
         await writer.drain()
         writer.write(P.encode(P.status("synced", battery=1.0, thermal="nominal")))
         await writer.drain()

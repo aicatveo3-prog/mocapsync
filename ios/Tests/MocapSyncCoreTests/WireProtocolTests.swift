@@ -84,7 +84,18 @@ final class WireProtocolTests: XCTestCase {
                        ["type", "offsetNs", "minRttNs", "uncertaintyNs", "spreadNs",
                         "samplesTotal", "samplesUsed", "samplesRejected",
                         "rttP0Ns", "rttP10Ns", "rttP50Ns", "rttP90Ns", "rttP100Ns",
-                        "rttShape"])
+                        "rttShape", "config"])
+    }
+
+    /// 측정 설정 문자열이 그대로 실려 나가는지.
+    /// 이게 비면 마스터 로그에 "무슨 조건의 숫자인지"가 남지 않습니다.
+    func testTimeResultCarriesConfigString() throws {
+        let est = SyncEstimate(
+            offsetNs: 0, minRttNs: 1, uncertaintyNs: 0, spreadNs: 0,
+            samplesTotal: 1, samplesUsed: 1, samplesRejected: 0, medianRttNs: 1)
+        let cfg = "400회/20x300ms/워밍업10+3/간격0ms/음성우선"
+        let j = try json(try WireCodec.encodeLine(TimeResultMsg(est, .empty, config: cfg)))
+        XCTAssertEqual(j["config"] as? String, cfg)
     }
 
     /// RTT 분포가 실제로 실려 나가는지. 값이 0 으로 새면 마스터가 진단을 못 합니다.

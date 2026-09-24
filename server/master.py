@@ -198,6 +198,9 @@ class Master:
                         fh=self.fh)
                     log(f"    │  실측 흔들림 {spr:.3f} ms", fh=self.fh)
                     log(f"    │  샘플        {used}/{total}", fh=self.fh)
+                    cfg = str(msg.get("config", "") or "")
+                    if cfg:
+                        log(f"    │  측정 설정   {cfg}", fh=self.fh)
                     self._log_rtt_profile(msg, total)
                     log(f"    └─ 판정: {'통과 ✔  (2ms 목표 달성)' if ok else '미달 �’'}",
                         fh=self.fh)

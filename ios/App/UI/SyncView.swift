@@ -166,6 +166,21 @@ struct SyncView: View {
 
             Divider().padding(.vertical, 6)
 
+            Text("통신 우선순위").font(.caption).foregroundStyle(.secondary)
+            Picker("우선순위", selection: Binding(
+                get: { client.options.priority },
+                set: { client.options.priority = $0 })) {
+                    ForEach(SyncClient.NetPriority.allCases) { p in
+                        Text(p.label).tag(p)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+            Text(client.options.priority.help)
+                .font(.caption2).foregroundStyle(.secondary).padding(.top, 2)
+
+            Divider().padding(.vertical, 6)
+
             Text("""
                  ★ 왜 '분산'이 기본인가
 
@@ -235,9 +250,16 @@ struct SyncView: View {
         }
     }
 
-    /// 현재 옵션이 어떤 프리셋인지. 일치하지 않으면 '분산'으로 표시합니다.
+    /// 현재 옵션이 어떤 프리셋인지.
+    ///
+    /// ★ 우선순위는 프리셋과 독립된 축이므로 비교에서 제외합니다.
+    ///   안 그러면 우선순위를 바꿀 때마다 프리셋 선택이 '분산'으로 튑니다.
     private func preset(_ o: SyncClient.Options) -> Preset {
-        Preset.allCases.first { $0.options == o } ?? .spread
+        Preset.allCases.first { p in
+            var q = p.options
+            q.priority = o.priority
+            return q == o
+        } ?? .spread
     }
 
     // MARK: - 진행 상태
