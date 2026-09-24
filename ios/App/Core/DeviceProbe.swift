@@ -180,8 +180,50 @@ enum DeviceProbe {
         // 케이스 이름은 .locked 입니다 (.lockedWhiteBalance 가 아님)
         let lockedWB = d.isWhiteBalanceModeSupported(.locked)
 
+        // ★ 고정초점 렌즈 판별 (2026-09-24 실측으로 알게 된 것)
+        //
+        // 아이폰 11 의 초광각과 전면 카메라는 자동초점 기구가 **없는** 고정초점입니다.
+        // (초광각 AF 는 아이폰 13 Pro, 전면 AF 는 14 부터)
+        // 그래서 isFocusModeSupported(.locked) 가 false 를 돌려줍니다 —
+        // "잠글 초점 기구가 없어서" 입니다.
+        //
+        // 처음엔 이걸 [불가] 로 판정했는데 해석이 거꾸로였습니다.
+        // 고정초점은 초점거리가 **물리적으로** 변할 수 없으므로
+        // 캘리브레이션 안정성 면에서 '잠글 수 있는 AF'보다 오히려 낫습니다.
+        //
+        // 구분법: 어떤 초점 모드도 지원하지 않으면 초점 기구가 없는 것입니다.
+        let anyFocusMode = d.isFocusModeSupported(.locked)
+            || d.isFocusModeSupported(.autoFocus)
+            || d.isFocusModeSupported(.continuousAutoFocus)
+        let isFixedFocus = !anyFocusMode
+
+        // ★ 합성(가상) 카메라 판별 — 이건 절대 쓰면 안 됩니다.
+        //
+        // builtInDualWideCamera / DualCamera / TripleCamera 는 물리 렌즈가 아니라
+        // 여러 렌즈를 **자동 전환**하는 가상 장치입니다. 촬영 중 렌즈가 바뀌면
+        // 초점거리·화각·왜곡이 통째로 바뀌어 캘리브레이션이 무의미해집니다.
+        // OIS 보다 훨씬 심각합니다.
+        let isComposite: Bool = {
+            switch d.deviceType {
+            case .builtInDualCamera, .builtInDualWideCamera, .builtInTripleCamera:
+                return true
+            default:
+                return false
+            }
+        }()
+
         // ── 판정 ──
         var checks: [Check] = []
+
+        // 합성 카메라는 다른 항목을 볼 필요도 없이 탈락입니다. 맨 위에 둡니다.
+        if isComposite {
+            checks.append(Check(
+                name: "★ 사용 금지 — 합성(가상) 카메라",
+                status: .fail,
+                detail: "여러 렌즈를 자동 전환하는 가상 장치입니다. 촬영 중 렌즈가 바뀌면 "
+                    + "초점거리·화각·왜곡이 통째로 바뀌어 캘리브레이션이 파괴됩니다. "
+                    + "개별 물리 카메라(광각 또는 초광각)를 쓰세요."))
+        }
 
         let p1080 = formats.filter { $0.is1080p && $0.supports60 }
         checks.append(Check(
@@ -196,6 +238,30 @@ enum DeviceProbe {
             name: "4K 60fps",
             status: p4k.isEmpty ? .warn : .pass,
             detail: p4k.isEmpty ? "없음 (1080p60 이면 충분합니다)" : "\(p4k.count)개 포맷"))
+
+        // ★ 고프레임 포맷의 화각 크롭 경고 (2026-09-24 실측으로 발견)
+        //
+        // 아이폰 11 후면 광각에서:
+        //   1080p  60fps -> 화각 69.7도  (정상)
+        //   1080p 120fps -> 화각 38.4도  (★ 반토막. 피험자가 프레임을 벗어납니다)
+        //   1080p 240fps -> 화각 69.7도 이지만 binned (화질 저하)
+        // 고프레임이 공짜가 아니라는 사실을 화면에서 바로 보이게 합니다.
+        let fov60 = formats.filter { $0.is1080p && $0.maxFrameRate >= 59 && $0.maxFrameRate < 61 }
+            .map(\.fovDegrees).max() ?? 0
+        let fastFormats = formats.filter { $0.is1080p && $0.maxFrameRate >= 100 }
+        if !fastFormats.isEmpty, fov60 > 0 {
+            let worstFov = fastFormats.map(\.fovDegrees).min() ?? 0
+            let cropped = worstFov < fov60 - 5
+            checks.append(Check(
+                name: "고프레임(100fps+) 화각 크롭",
+                status: cropped ? .warn : .pass,
+                detail: cropped
+                    ? String(format: "★ 크롭 있음. 60fps 에서 %.1f도 -> 고프레임에서 최소 %.1f도. "
+                             + "고프레임을 쓰면 피험자가 프레임을 벗어날 수 있습니다. "
+                             + "1080p60 을 권합니다", fov60, worstFov)
+                    : String(format: "크롭 없음 (60fps %.1f도, 고프레임 최소 %.1f도)",
+                             fov60, worstFov)))
+        }
 
         checks.append(Check(
             name: "셔터 직접 지정 (.custom)",
@@ -213,12 +279,27 @@ enum DeviceProbe {
                 ? "\(shortest) ns = 1/\(Int(Double(NS.perSecond) / Double(shortest)))초"
                 : "미보고"))
 
-        checks.append(Check(
-            name: "초점 고정 (.locked)",
-            status: lockedFocus ? .pass : .fail,
-            detail: lockedFocus
-                ? "지원. 초점거리가 안 변하므로 캘리브레이션이 유효합니다"
-                : "미지원. 초점이 변하면 내부 파라미터가 변해 캘리브레이션이 무의미해집니다"))
+        // 초점: 고정초점 / 잠금가능 / 잠금불가 세 갈래로 판정합니다.
+        // 앞서 고정초점을 [불가] 로 잘못 판정했던 부분을 바로잡은 것입니다.
+        if isFixedFocus {
+            checks.append(Check(
+                name: "초점 (고정초점 렌즈)",
+                status: .pass,
+                detail: "자동초점 기구가 없는 고정초점입니다. 초점거리가 물리적으로 변할 수 "
+                    + "없으므로 캘리브레이션 안정성이 최상입니다. "
+                    + "(아이폰 11 의 초광각·전면이 여기 해당)"))
+        } else if lockedFocus {
+            checks.append(Check(
+                name: "초점 고정 (.locked)",
+                status: .pass,
+                detail: "AF 를 잠글 수 있습니다. 촬영 전에 잠그면 초점거리가 고정됩니다"))
+        } else {
+            checks.append(Check(
+                name: "초점 고정 (.locked)",
+                status: .fail,
+                detail: "AF 는 있는데 잠글 수 없습니다. 초점이 변하면 내부 파라미터가 변해 "
+                    + "캘리브레이션이 무의미해집니다"))
+        }
 
         checks.append(Check(
             name: "화이트밸런스 고정",
