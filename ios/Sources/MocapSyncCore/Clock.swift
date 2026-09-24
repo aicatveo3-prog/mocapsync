@@ -32,6 +32,25 @@ public enum MonotonicClock {
     public static func realtimeNs() -> Int64 {
         Int64(bitPattern: clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW))
     }
+
+    /// ★ 부팅 이후 누적 절전 시간 (나노초).
+    ///
+    /// `CLOCK_MONOTONIC_RAW` 는 절전 중에도 흐르고 `CLOCK_UPTIME_RAW` 는 멈추므로,
+    /// 둘의 차이가 "지금까지 잠들어 있던 시간"입니다.
+    ///
+    /// ★ 이 값이 왜 중요한가 (2026-09-24 실측으로 밝혀짐)
+    ///
+    ///   19:11 측정 오프셋  +5,522,186 ms
+    ///   20:04 측정 오프셋  +7,560,244 ms
+    ///   실제 경과 52분 38초인데 폰 시계는 18분 40초만 진행 → **34분을 잤음**
+    ///
+    /// 즉 폰이 한 번 자면 이전에 측정한 클럭 오프셋은 **그 즉시 무효**입니다.
+    /// 그래서 동기 시점과 녹화 시점의 이 값을 각각 기록해 두고, 값이 달라졌으면
+    /// "오프셋이 낡았다"고 판정합니다. 사이드카에 두 값을 모두 넣는 이유입니다.
+    @inlinable
+    public static func cumulativeSleepNs() -> Int64 {
+        realtimeNs() - nowNs()
+    }
 }
 
 /// 나노초 상수.
