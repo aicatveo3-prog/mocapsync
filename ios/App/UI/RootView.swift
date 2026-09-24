@@ -83,18 +83,38 @@ struct RootView: View {
     }
 
     private var roleCard: some View {
-        Card(title: "역할 선택 (다음 단계 예고)") {
+        Card(title: "클럭 동기") {
+            Text("""
+                 PC 마스터(`python server/master.py`)에 붙어서 시각 차이를 측정합니다. \
+                 폰 1대만으로 측정 가능합니다.
+                 """)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            NavigationLink {
+                SyncView()
+            } label: {
+                Text("동기 측정 열기")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.blue.opacity(0.85), in: RoundedRectangle(cornerRadius: 10))
+                    .foregroundStyle(.white)
+            }
+            .padding(.top, 10)
+
             HStack(spacing: 10) {
-                RoleButton(title: "마스터") {
-                    toast = "다음 단계에서 구현됩니다"
+                RoleButton(title: "마스터 역할") {
+                    toast = "3단계에서 구현됩니다 (지금은 PC 가 마스터)"
                 }
-                RoleButton(title: "슬레이브") {
-                    toast = "다음 단계에서 구현됩니다"
+                RoleButton(title: "녹화") {
+                    toast = "3단계에서 구현됩니다"
                 }
             }
+            .padding(.top, 8)
+
             Text("""
-                 하나의 앱으로 두 역할을 모두 수행하는 구조를 미리 잡아둔 것입니다. \
-                 통신 규약과 시각 계산은 이미 완성되어 PC 쪽 구현과 함께 검증됐습니다.
+                 목표: 오차 상한 2 ms 미만. 최소 RTT 가 4 ms 미만이면 수학적으로 보장됩니다.
                  """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
