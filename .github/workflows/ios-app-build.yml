@@ -1,0 +1,143 @@
+name: iOS App IPA
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 서명 없는 IPA 를 만들어 아티팩트로 올립니다.
+# 서명은 사용자가 Windows 에서 Sideloadly 로 붙입니다 (무료 Apple ID, 7일 만료).
+#
+# .xcodeproj 를 커밋하지 않고 XcodeGen 으로 생성하는 이유:
+# 개발자(AI)가 Windows 에서 Xcode 를 쓸 수 없어 pbxproj 를 손으로 관리하기
+# 어렵습니다. 사람이 읽을 수 있는 ios/project.yml 만 관리합니다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-app-build.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 서명 없는 IPA
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 환경 확인
+        run: |
+          sw_vers
+          xcodebuild -version
+          echo "--- 사용 가능한 SDK ---"
+          xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: XcodeGen 설치
+        run: brew install xcodegen
+
+      # project.yml -> MocapSync.xcodeproj
+      - name: Xcode 프로젝트 생성
+        working-directory: ios
+        run: |
+          xcodegen generate --spec project.yml
+          echo "--- 생성 확인 ---"
+          ls -la
+          echo "--- 스킴 목록 ---"
+          xcodebuild -list -project MocapSync.xcodeproj
+
+      - name: 빌드 (서명 없음)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MocapSync.xcodeproj \
+            -scheme MocapSync \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build
+
+      - name: IPA 패키징
+        id: pack
+        working-directory: ios
+        run: |
+          set -e
+          PRODUCTS=build/Build/Products/Release-iphoneos
+          ls -la "$PRODUCTS"
+          APP=$(find "$PRODUCTS" -maxdepth 1 -name "*.app" | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "::error::.app 을 찾지 못했습니다"
+            exit 1
+          fi
+          echo ".app = $APP"
+
+          # IPA = Payload/ 폴더에 .app 을 넣고 zip 한 것입니다.
+          # Sideloadly 가 이걸 받아 서명을 붙여 설치합니다.
+          rm -rf Payload MocapSync-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry MocapSync-unsigned.ipa Payload
+          SIZE=$(du -h MocapSync-unsigned.ipa | cut -f1)
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          ls -lh MocapSync-unsigned.ipa
+
+          echo "--- Info.plist 확인 ---"
+          plutil -p "$APP/Info.plist" | grep -Ei \
+            'CFBundleIdentifier|CFBundleShortVersion|MinimumOSVersion|NSCamera|NSLocalNetwork|NSBonjour' || true
+
+      - name: 요약
+        run: |
+          {
+            echo "## MocapSync 서명 없는 IPA"
+            echo ""
+            echo "| 항목 | 값 |"
+            echo "| --- | --- |"
+            echo "| 커밋 | \`${GITHUB_SHA:0:7}\` |"
+            echo "| 크기 | ${{ steps.pack.outputs.size }} |"
+            echo "| Xcode | $(xcodebuild -version | head -n1) |"
+            echo ""
+            echo "### 설치 방법 (Windows)"
+            echo "1. 아래 Artifacts 에서 zip 을 받아 압축을 풉니다 (\`.ipa\` 가 들어 있습니다)"
+            echo "2. 아이폰을 USB 로 연결하고 폰에서 **신뢰**"
+            echo "3. **Sideloadly** 실행 → \`.ipa\` 드래그 → Apple ID 입력 → **Start**"
+            echo "4. 폰: 설정 → 일반 → VPN 및 기기 관리 → 개발자 앱 → **신뢰**"
+            echo "5. iOS 16+ 는 설정 → 개인정보 보호 및 보안 → **개발자 모드** 켜기 필요"
+            echo ""
+            echo "무료 Apple ID 는 7일 후 만료됩니다. 같은 IPA 를 다시 설치하면 됩니다."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: IPA 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: MocapSync-unsigned-ipa-${{ github.run_number }}
+          path: ios/MocapSync-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 실패 시 빌드 로그 업로드
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs-${{ github.run_number }}
+          path: |
+            ios/build/Logs/**
+            ios/*.xcodeproj/project.pbxproj
+          if-no-files-found: ignore
+          retention-days: 7

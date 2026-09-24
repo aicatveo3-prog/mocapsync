@@ -1,0 +1,79 @@
+# XcodeGen 프로젝트 스펙.
+#
+# 왜 .xcodeproj 를 커밋하지 않고 이 YAML 을 쓰는가:
+# 개발자(AI)는 Windows 에서 Xcode 를 실행할 수 없어 .xcodeproj(pbxproj) 를
+# 손으로 쓰면 오류를 잡기 어렵습니다. XcodeGen 이 CI 에서 이 YAML 로부터
+# 프로젝트를 생성하므로, 사람이 읽고 고칠 수 있는 파일만 관리합니다.
+#
+# 생성: cd ios && xcodegen generate
+
+name: MocapSync
+
+options:
+  bundleIdPrefix: com.mocapsync
+  deploymentTarget:
+    # 실기기가 iOS 17.5.1 이므로 17.0 으로 잡습니다.
+    # 러너 Xcode 가 26.x 로 최신이라 너무 낮은 타깃은 경고/오류가 날 수 있습니다.
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+    # CI 는 서명 없이 빌드합니다. 서명은 Sideloadly 가 설치 시점에 붙입니다.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  MocapSync:
+    type: application
+    platform: iOS
+    sources:
+      # 앱 전용 코드 (SwiftUI, AVFoundation)
+      - path: App
+      # ★ 순수 로직을 같은 파일로 공유합니다.
+      #   SwiftPM 패키지 의존성이 아니라 "같은 소스를 두 빌드 시스템이 본다"는 구조.
+      #   CI 에서 SPM 의존성 해석이 실패할 여지를 없앱니다.
+      - path: Sources/MocapSyncCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mocapsync.ios
+        INFOPLIST_FILE: ""
+        GENERATE_INFOPLIST_FILE: "NO"
+        TARGETED_DEVICE_FAMILY: "1"   # iPhone 전용
+    info:
+      path: App/Info.generated.plist
+      properties:
+        CFBundleDisplayName: MocapSync
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UIViewControllerBasedStatusBarAppearance: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # 권한 설명문. 없으면 iOS 가 앱을 즉시 종료시킵니다.
+        NSCameraUsageDescription: >-
+          여러 대의 아이폰으로 동시에 촬영해 3D 모션을 복원하기 위해
+          카메라에 접근합니다. 영상은 이 기기와 사용자의 PC 에만 저장됩니다.
+        NSMicrophoneUsageDescription: >-
+          영상 녹화 시 오디오 트랙이 포함될 수 있습니다. 모션 복원에는
+          사용되지 않습니다.
+        # ★ iOS 14+ 에서 로컬 네트워크 통신에 필수. 없으면 조용히 실패합니다.
+        NSLocalNetworkUsageDescription: >-
+          같은 WiFi 에 있는 다른 아이폰과 PC 를 찾아 촬영 시각을 맞추기 위해
+          로컬 네트워크를 사용합니다.
+        # ★ mDNS 로 찾을 서비스 타입을 미리 선언해야 합니다.
+        NSBonjourServices:
+          - _mocapsync._tcp
+          - _mocapsync._udp
+        # 화면이 꺼지면 촬영이 끊기므로 앱에서 제어합니다 (코드에서 설정)
+        UIApplicationSupportsIndirectInputEvents: true
