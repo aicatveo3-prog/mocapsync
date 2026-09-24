@@ -428,7 +428,9 @@ enum DeviceProbe {
 
         s += "[앱]\n"
         s += "  bundleId      = \(BuildInfo.bundleId)\n"
-        s += "  version       = \(BuildInfo.versionName) (build \(BuildInfo.buildNumber))\n\n"
+        s += "  version       = \(BuildInfo.versionName) (build \(BuildInfo.buildNumber))\n"
+        // ★ 커밋 해시. 새 IPA 가 실제로 깔렸는지 이 줄로 판정합니다.
+        s += "  커밋          = \(BuildInfo.gitCommit)\n\n"
 
         s += "[기기]\n"
         s += "  모델식별자    = \(BuildInfo.deviceModelIdentifier)\n"

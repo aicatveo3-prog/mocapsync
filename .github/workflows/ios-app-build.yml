@@ -57,10 +57,19 @@ jobs:
           echo "--- 스킴 목록 ---"
           xcodebuild -list -project MocapSync.xcodeproj
 
+      # ★ 빌드 번호와 커밋 해시를 앱 안에 심습니다.
+      #
+      # 왜 필요한가: 실기기 테스트를 사람이 대신 하므로, 폰에 깔린 앱이
+      # "방금 만든 빌드"인지 확인할 수 없으면 디버깅 루프가 막힙니다.
+      # project.yml 에 build 1 을 고정해 뒀던 탓에, 코드를 고치고 새 IPA 를
+      # 설치해도 진단 리포트가 글자 하나 다르지 않아 설치 여부를 알 수 없었습니다.
       - name: 빌드 (서명 없음)
         working-directory: ios
         run: |
           set -o pipefail
+          BUILD_NUM="${{ github.run_number }}"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "빌드 번호 = $BUILD_NUM / 커밋 = $SHORT_SHA"
           xcodebuild \
             -project MocapSync.xcodeproj \
             -scheme MocapSync \
@@ -68,6 +77,8 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            CURRENT_PROJECT_VERSION="$BUILD_NUM" \
+            GIT_COMMIT="$SHORT_SHA" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -100,7 +111,33 @@ jobs:
 
           echo "--- Info.plist 확인 ---"
           plutil -p "$APP/Info.plist" | grep -Ei \
-            'CFBundleIdentifier|CFBundleShortVersion|MinimumOSVersion|NSCamera|NSLocalNetwork|NSBonjour' || true
+            'CFBundleIdentifier|CFBundleShortVersion|CFBundleVersion|GitCommit|MinimumOSVersion|NSCamera|NSLocalNetwork|NSBonjour' || true
+
+          # ★ 버전 주입 검증 — 실패하면 빌드를 깨뜨립니다.
+          #
+          # 이 검증이 없으면 주입이 조용히 안 되고, 사용자는 새 IPA 를 깔았는데도
+          # 예전과 똑같은 버전 문자열을 보게 됩니다. 그 상태로는 "설치가 안 된
+          # 건지, 내 수정이 효과가 없는 건지" 구분할 수 없어 디버깅이 막힙니다.
+          # 실제로 build 1 고정 때문에 한 번 겪었습니다.
+          GOT_BUILD=$(plutil -extract CFBundleVersion raw -o - "$APP/Info.plist")
+          GOT_SHA=$(plutil -extract GitCommit raw -o - "$APP/Info.plist")
+          GOT_VER=$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Info.plist")
+          echo "심긴 값: version=$GOT_VER build=$GOT_BUILD commit=$GOT_SHA"
+
+          if [ "$GOT_BUILD" != "${{ github.run_number }}" ]; then
+            echo "::error::CFBundleVersion 주입 실패. 기대 '${{ github.run_number }}', 실제 '$GOT_BUILD'"
+            exit 1
+          fi
+          if [ "$GOT_SHA" != "${GITHUB_SHA:0:7}" ]; then
+            echo "::error::GitCommit 주입 실패. 기대 '${GITHUB_SHA:0:7}', 실제 '$GOT_SHA'"
+            exit 1
+          fi
+          case "$GOT_SHA" in
+            '$('*|local) echo "::error::GitCommit 이 치환되지 않았습니다: $GOT_SHA"; exit 1 ;;
+          esac
+          echo "version=$GOT_VER" >> "$GITHUB_OUTPUT"
+          echo "build=$GOT_BUILD" >> "$GITHUB_OUTPUT"
+          echo "commit=$GOT_SHA" >> "$GITHUB_OUTPUT"
 
       - name: 요약
         run: |
@@ -109,9 +146,13 @@ jobs:
             echo ""
             echo "| 항목 | 값 |"
             echo "| --- | --- |"
-            echo "| 커밋 | \`${GITHUB_SHA:0:7}\` |"
+            echo "| **앱에 표시될 버전** | **${{ steps.pack.outputs.version }} (build ${{ steps.pack.outputs.build }})** |"
+            echo "| **커밋** | **\`${{ steps.pack.outputs.commit }}\`** |"
             echo "| 크기 | ${{ steps.pack.outputs.size }} |"
             echo "| Xcode | $(xcodebuild -version | head -n1) |"
+            echo ""
+            echo "> 설치 후 앱 첫 화면의 **이 빌드** 카드에서 위 버전과 커밋이"
+            echo "> 그대로 보이면 새 빌드가 정상 설치된 것입니다."
             echo ""
             echo "### 설치 방법 (Windows)"
             echo "1. 아래 Artifacts 에서 zip 을 받아 압축을 풉니다 (\`.ipa\` 가 들어 있습니다)"

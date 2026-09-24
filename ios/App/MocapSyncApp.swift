@@ -10,7 +10,7 @@ struct MocapSyncApp: App {
         // 시계 연속성 유지에도 필요합니다. (docs/PROTOCOL.md §1)
         UIApplication.shared.isIdleTimerDisabled = true
 
-        AppLog.shared.i("App", "앱 시작 v\(BuildInfo.versionName) (build \(BuildInfo.buildNumber))")
+        AppLog.shared.i("App", "앱 시작 v\(BuildInfo.versionFull)")
         AppLog.shared.i("App", "기기 \(BuildInfo.deviceModelIdentifier) / iOS \(BuildInfo.osVersion)")
         AppLog.shared.i("App", "시계 \(MonotonicClock.name) = \(MonotonicClock.nowNs()) ns")
     }
@@ -31,9 +31,21 @@ struct MocapSyncApp: App {
 enum BuildInfo {
     static let versionName =
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    /// CI 의 GitHub run_number. 로컬 빌드는 "0".
+    /// 같은 버전이라도 이 값이 오르므로 "새 빌드가 깔렸는지"를 판정할 수 있습니다.
     static let buildNumber =
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+    /// 이 빌드를 만든 커밋 짧은 해시. 로컬 빌드는 "local".
+    static let gitCommit =
+        Bundle.main.infoDictionary?["GitCommit"] as? String ?? "?"
     static let bundleId = Bundle.main.bundleIdentifier ?? "?"
+
+    /// "0.3.0 (7) a1b2c3d" — 로그/리포트/hello 에 한 덩어리로 쓰는 식별자.
+    ///
+    /// ★ 이게 없어서 겪은 문제: 0.2.0(build 1) 이 고정값이라 새 IPA 를 설치해도
+    ///   진단 리포트가 이전과 글자 하나 다르지 않았습니다. 설치가 됐는지,
+    ///   내가 고친 코드가 실제로 돌고 있는지 확인할 방법이 없었습니다.
+    static let versionFull = "\(versionName) (\(buildNumber)) \(gitCommit)"
 
     static let osVersion = UIDevice.current.systemVersion
 

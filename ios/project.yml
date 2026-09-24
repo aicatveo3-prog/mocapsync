@@ -20,8 +20,17 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "0.2.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.3.0"
+    # ★ CI 가 --build-number 로 덮어씁니다 (GitHub run_number).
+    #   여기 값은 로컬 빌드용 기본값일 뿐입니다.
+    #
+    #   왜 이렇게 하는가: 실기기 테스트를 사람이 대신 하기 때문에,
+    #   "지금 폰에 깔린 게 방금 만든 빌드인가"를 확인할 수 없으면 디버깅이 막힙니다.
+    #   실제로 0.2.0(build 1) 을 고정해 둔 탓에, 코드를 고치고 새 IPA 를 설치해도
+    #   진단 리포트가 이전과 똑같이 찍혀 설치 성공 여부를 알 수 없었습니다.
+    CURRENT_PROJECT_VERSION: "0"
+    # ★ CI 가 커밋 해시로 덮어씁니다. 로컬 빌드는 "local" 로 남습니다.
+    GIT_COMMIT: "local"
     SWIFT_VERSION: "5.0"
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
     # CI 는 서명 없이 빌드합니다. 서명은 Sideloadly 가 설치 시점에 붙입니다.
@@ -57,6 +66,9 @@ targets:
         CFBundleDisplayName: MocapSync
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # ★ 어느 커밋으로 만든 빌드인지 앱 안에서 확인할 수 있게 심습니다.
+        #   CI 가 GIT_COMMIT 을 짧은 해시로 넘깁니다.
+        GitCommit: "$(GIT_COMMIT)"
         UILaunchScreen: {}
         UIRequiresFullScreen: true
         UIStatusBarStyle: UIStatusBarStyleLightContent

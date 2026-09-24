@@ -46,6 +46,7 @@ struct RootView: View {
     private var buildCard: some View {
         Card(title: "이 빌드") {
             KV("버전", "\(BuildInfo.versionName) (build \(BuildInfo.buildNumber))")
+            KV("커밋", BuildInfo.gitCommit)
             KV("bundleId", BuildInfo.bundleId)
             KV("기기", "\(BuildInfo.deviceFriendlyName)  (\(BuildInfo.deviceModelIdentifier))")
             KV("iOS", BuildInfo.osVersion)

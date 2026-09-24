@@ -208,7 +208,9 @@ final class SyncClient: ObservableObject {
                 platform: "ios",
                 model: BuildInfo.deviceModelIdentifier,
                 osVersion: BuildInfo.osVersion,
-                appVersion: BuildInfo.versionName,
+                // ★ 커밋 해시까지 보냅니다. PC 마스터 콘솔에서 어떤 빌드가
+                //   접속했는지 바로 보이므로, 폰 화면을 안 봐도 판정됩니다.
+                appVersion: BuildInfo.versionFull,
                 clock: MonotonicClock.name))
 
             let (ackLine, _) = try await nextLine()
