@@ -148,45 +148,40 @@ struct SyncView: View {
 
     private var optionsCard: some View {
         Card(title: "측정 설정") {
-            Picker("왕복 횟수", selection: Binding(
-                get: { client.options.probeCount },
-                set: { client.options.probeCount = $0 })) {
-                    Text("40").tag(40)
-                    Text("120").tag(120)
-                    Text("400").tag(400)
-                    Text("1000").tag(1000)
+            Picker("방식", selection: Binding(
+                get: { preset(client.options) },
+                set: { client.options = $0.options })) {
+                    ForEach(Preset.allCases) { p in Text(p.label).tag(p) }
                 }
                 .pickerStyle(.segmented)
 
-            Text("왕복 횟수")
-                .font(.caption2).foregroundStyle(.secondary)
+            Text(preset(client.options).help)
+                .font(.caption2).foregroundStyle(.secondary).padding(.top, 2)
 
-            Picker("간격", selection: Binding(
-                get: { client.options.gapMs },
-                set: { client.options.gapMs = $0 })) {
-                    Text("연사").tag(0)
-                    Text("2 ms").tag(2)
-                    Text("5 ms").tag(5)
-                }
-                .pickerStyle(.segmented)
-                .padding(.top, 6)
+            KV("왕복", "\(client.options.probeCount)회")
+            KV("버스트", client.options.burstSize > 0
+                ? "\(client.options.burstSize)회씩, 사이 \(client.options.burstGapMs)ms 휴식"
+                : "없음 (단일 연사)")
+            KV("예상 소요", String(format: "%.1f초", client.options.estimatedSeconds))
 
-            Text("왕복 사이 간격. 연사가 기본입니다 — 쉬면 iOS 가 WiFi 무선을 "
-                 + "절전시켜서 다음 패킷이 느려집니다. 5 ms 는 2026-09-24 측정과 "
-                 + "같은 조건이라 비교 기준선으로 남겼습니다.")
-                .font(.caption2).foregroundStyle(.secondary)
+            Divider().padding(.vertical, 6)
 
-            Picker("워밍업", selection: Binding(
-                get: { client.options.warmupCount },
-                set: { client.options.warmupCount = $0 })) {
-                    Text("없음").tag(0)
-                    Text("10회").tag(10)
-                    Text("30회").tag(30)
-                }
-                .pickerStyle(.segmented)
-                .padding(.top, 6)
+            Text("""
+                 ★ 왜 '분산'이 기본인가
 
-            Text("측정 전에 버리는 왕복. 무선을 미리 깨웁니다.")
+                 2026-09-24 실측이 재현되지 않았습니다.
+                   18:22  최소 RTT 4.435 ms
+                   18:58  최소 RTT 5.989 ms   (같은 빌드·같은 설정)
+
+                 120회 연사는 2초 만에 끝나므로 WiFi 상태의 2초 창 하나만
+                 봅니다. 그 창이 나쁘면 결과도 나쁩니다. 같은 2초 안에서
+                 왕복을 1000회로 늘려도 창이 안 바뀌니 소용없습니다.
+
+                 '분산'은 20회씩 연사하고 300ms 쉬기를 20번 반복해
+                 20개의 서로 다른 시간 창을 봅니다. 버스트 내부는 연사라
+                 무선이 깨어 있고, 버스트 시작 시 3회를 버려 절전 기동시간을
+                 표본에서 제외합니다.
+                 """)
                 .font(.caption2).foregroundStyle(.secondary)
 
             Divider().padding(.vertical, 6)
@@ -194,15 +189,55 @@ struct SyncView: View {
             Text("""
                  ★ 최소 RTT 를 더 줄이려면 (효과가 큰 순서)
 
-                 1. PC 를 **유선 랜**에 연결하세요. PC 도 WiFi 면 왕복 한 번에
+                 1. PC 를 유선 랜에 연결하세요. PC 도 WiFi 면 왕복 한 번에
                     공중을 4번 건너갑니다(폰→AP→PC→AP→폰). 유선이면 2번입니다.
                     이게 가장 큰 차이를 만듭니다.
-                 2. 폰을 **5GHz** WiFi 에 연결하세요. 2.4GHz 는 혼잡해서 느립니다.
+                 2. 폰을 5GHz WiFi 에 연결하세요. 2.4GHz 는 혼잡해서 느립니다.
                  3. 공유기에 가까이 가세요.
-                 4. 왕복 횟수를 늘리세요 (위 분포가 '꼬리가 두껍다'고 할 때만 효과).
+                 4. '분산' 또는 '넓게 분산' 으로 여러 시간 창을 보세요.
                  """)
                 .font(.caption2).foregroundStyle(.secondary)
         }
+    }
+
+    /// 측정 방식 프리셋. 사용자가 조합을 직접 맞추지 않아도 되게 묶었습니다.
+    private enum Preset: String, CaseIterable, Identifiable {
+        case rapid, spread, wide, legacy
+        var id: String { rawValue }
+
+        var options: SyncClient.Options {
+            switch self {
+            case .rapid:  return .rapid
+            case .spread: return .spread
+            case .wide:   return .wide
+            case .legacy: return .legacy
+            }
+        }
+        var label: String {
+            switch self {
+            case .rapid:  return "연사"
+            case .spread: return "분산"
+            case .wide:   return "넓게"
+            case .legacy: return "기준선"
+            }
+        }
+        var help: String {
+            switch self {
+            case .rapid:
+                return "120회를 2초에 몰아칩니다. 빠르지만 WiFi 상태의 시간 창 하나만 봅니다."
+            case .spread:
+                return "★ 권장. 20회씩 20버스트, 약 7초간 20개 시간 창을 봅니다."
+            case .wide:
+                return "20회씩 30버스트, 약 30초. 가장 낮은 최소 RTT 를 찾을 확률이 높습니다."
+            case .legacy:
+                return "2026-09-24 17:56 측정과 동일한 조건(40회·간격 5ms·워밍업 없음). 비교용."
+            }
+        }
+    }
+
+    /// 현재 옵션이 어떤 프리셋인지. 일치하지 않으면 '분산'으로 표시합니다.
+    private func preset(_ o: SyncClient.Options) -> Preset {
+        Preset.allCases.first { $0.options == o } ?? .spread
     }
 
     // MARK: - 진행 상태

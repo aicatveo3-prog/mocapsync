@@ -145,7 +145,24 @@ class SlaveSim:
                 await self._net_delay(uplink=False)
 
         samples: list[cs.TimeSample] = []
+        bursts = 1
         for seq in range(self.a.probes):
+            # ── 버스트 경계 ──────────────────────────────────────────────────
+            #
+            # 왜: 연사만 하면 WiFi 상태의 짧은 시간 창 하나만 표본화합니다.
+            # 2026-09-24 실측에서 같은 설정으로 4.435ms / 5.989ms 가 나왔습니다.
+            # 휴식으로 다른 창을 보고, 재개 직전 워밍업으로 절전 기동시간을 뺍니다.
+            if self.a.burst_size > 0 and seq > 0 and seq % self.a.burst_size == 0:
+                bursts += 1
+                await asyncio.sleep(self.a.burst_gap_ms / 1000.0)
+                for w in range(self.a.burst_warmup):
+                    wt1 = self.clock_ns()
+                    await self._net_delay(uplink=True)
+                    writer.write(P.encode(P.time_req(-1000 - w, wt1)))
+                    await writer.drain()
+                    await reader.readline()
+                    await self._net_delay(uplink=False)
+
             t1 = self.clock_ns()
             await self._net_delay(uplink=True)
             writer.write(P.encode(P.time_req(seq, t1)))
@@ -179,6 +196,7 @@ class SlaveSim:
 
         # ★ RTT 분포 — "왕복을 늘려서 될 일인가"를 알려줍니다
         log("")
+        log(f"  버스트 {bursts}개로 분산 측정")
         log("  " + self.prof.summary_line())
         for ln in self.prof.histogram_lines():
             log("  " + ln)
@@ -390,6 +408,13 @@ def main() -> int:
     ap.add_argument("--device-id", default=None)
     ap.add_argument("--probes", type=int, default=cs.DEFAULT_PROBE_COUNT)
     ap.add_argument("--best-k", type=int, default=cs.DEFAULT_BEST_K)
+    ap.add_argument("--burst-size", type=int, default=cs.DEFAULT_BURST_SIZE,
+                    help="버스트 하나에 넣을 측정 왕복 수. 0 이면 단일 연사. "
+                         "연사만 하면 WiFi 상태의 시간 창 하나만 표본화합니다")
+    ap.add_argument("--burst-gap-ms", type=float, default=cs.DEFAULT_BURST_GAP_MS,
+                    help="버스트 사이 휴식")
+    ap.add_argument("--burst-warmup", type=int, default=cs.DEFAULT_BURST_WARMUP,
+                    help="각 버스트 시작 시 버리는 왕복 수")
     ap.add_argument("--warmup", type=int, default=cs.DEFAULT_WARMUP_COUNT,
                     help="측정 전에 버리는 왕복 횟수 (WiFi 무선 기동용). "
                          "아이폰 앱과 같은 절차를 돌리기 위해 시뮬레이터에도 있습니다")

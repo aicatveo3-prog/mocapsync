@@ -55,15 +55,54 @@ final class SyncClient: ObservableObject {
     /// 2026-09-24 실측에서 최소 RTT 4.810 ms 로 목표(4 ms)를 못 맞췄기 때문에,
     /// 어떤 요인이 지배적인지 사용자가 직접 조합을 돌려볼 수 있어야 합니다.
     struct Options: Equatable {
-        var probeCount: Int = 120
+        var probeCount: Int = 400
         var warmupCount: Int = SyncConfig.warmupCount
         var gapMs: Int = SyncConfig.probeGapMs
 
-        static let fast     = Options(probeCount: 40,  warmupCount: 5,  gapMs: 0)
-        static let standard = Options(probeCount: 120, warmupCount: 10, gapMs: 0)
-        static let deep     = Options(probeCount: 400, warmupCount: 20, gapMs: 0)
-        /// 이전(2026-09-24) 측정과 같은 조건. 비교 기준선으로 남겨 둡니다.
-        static let legacy   = Options(probeCount: 40,  warmupCount: 0,  gapMs: 5)
+        // ── 버스트 (시간 분산 표본화) ────────────────────────────────────────
+        //
+        // ★ 왜 필요한가 — 2026-09-24 실측이 재현되지 않았습니다.
+        //
+        //   18:22  최소 RTT 4.435 ms
+        //   18:58  최소 RTT 5.989 ms   (같은 빌드, 같은 설정)
+        //
+        // 35% 차이입니다. 원인: 120회 연사는 2초 만에 끝나므로 WiFi 상태의
+        // **2초 창 하나**만 표본화합니다. 그 창이 나쁘면 최소 RTT 도 나쁩니다.
+        // 같은 2초 안에서 왕복을 1000회로 늘려도 창이 바뀌지 않으니 소용없습니다.
+        //
+        // 필요한 것은 "여러 시간 창을 보는 것"인데, 그냥 간격을 주면 무선이
+        // 매번 절전에 들어가 손해입니다. 둘을 동시에 만족시키는 방법이 버스트입니다.
+        //   · 버스트 내부는 연사     -> 무선이 깨어 있음
+        //   · 버스트 사이는 휴식     -> 다른 시간 창을 봄
+        //   · 버스트마다 짧은 워밍업 -> 휴식 뒤 절전 기동시간을 본 표본에서 제외
+        /// 버스트 하나에 넣을 측정 왕복 수. 0 이면 단일 버스트(연사).
+        var burstSize: Int = 20
+        /// 버스트 사이 휴식(ms)
+        var burstGapMs: Int = 300
+        /// 각 버스트 시작 시 버리는 왕복 수
+        var burstWarmup: Int = 3
+
+        /// 측정에 걸릴 대략적인 시간(초). UI 안내용.
+        var estimatedSeconds: Double {
+            guard burstSize > 0 else { return Double(probeCount) * 0.016 }
+            let bursts = max(1, Int(ceil(Double(probeCount) / Double(burstSize))))
+            let perProbe = 0.016 + Double(gapMs) / 1000.0
+            return Double(bursts - 1) * Double(burstGapMs) / 1000.0
+                 + Double(probeCount + bursts * burstWarmup) * perProbe
+        }
+
+        /// 단일 버스트 연사. 빠르지만 시간 창 하나만 봅니다.
+        static let rapid = Options(probeCount: 120, warmupCount: 10, gapMs: 0,
+                                   burstSize: 0, burstGapMs: 0, burstWarmup: 0)
+        /// ★ 기본값. 20회씩 20버스트, 사이 300ms → 약 7초간 20개 시간 창을 봅니다.
+        static let spread = Options(probeCount: 400, warmupCount: 10, gapMs: 0,
+                                    burstSize: 20, burstGapMs: 300, burstWarmup: 3)
+        /// 더 오래 흩뿌립니다. 약 30초.
+        static let wide   = Options(probeCount: 600, warmupCount: 10, gapMs: 0,
+                                    burstSize: 20, burstGapMs: 900, burstWarmup: 3)
+        /// 2026-09-24 17:56 측정과 같은 조건. 비교 기준선.
+        static let legacy = Options(probeCount: 40, warmupCount: 0, gapMs: 5,
+                                    burstSize: 0, burstGapMs: 0, burstWarmup: 0)
     }
 
     @Published var phase: Phase = .idle
@@ -71,7 +110,7 @@ final class SyncClient: ObservableObject {
     @Published var estimate: SyncEstimate?
     @Published var profile: RttProfile?
     @Published var lastServerId: String?
-    @Published var options: Options = .standard
+    @Published var options: Options = .spread
     /// 로컬 네트워크 권한이 거부됐을 가능성 안내
     @Published var localNetworkHint = false
 
@@ -237,7 +276,10 @@ final class SyncClient: ObservableObject {
                                      thermal: thermalName()))
 
             let opt = options
-            AppLog.shared.i("Sync", "측정 설정: 왕복 \(opt.probeCount)회, 워밍업 \(opt.warmupCount)회, 간격 \(opt.gapMs)ms")
+            AppLog.shared.i("Sync", String(
+                format: "측정 설정: 왕복 %d회, 워밍업 %d회, 간격 %dms, 버스트 %d회씩 휴식 %dms (예상 %.1f초)",
+                opt.probeCount, opt.warmupCount, opt.gapMs,
+                opt.burstSize, opt.burstGapMs, opt.estimatedSeconds))
 
             // ── 2) 워밍업 ────────────────────────────────────────────────────
             //
@@ -270,10 +312,28 @@ final class SyncClient: ObservableObject {
             // 그 지연이 "다음 왕복의 t1 을 찍기 전"에 들어가 RTT 를 부풀립니다.
             // 측정기가 스스로 측정값을 망치는 전형적인 형태입니다.
             let uiStride = max(1, opt.probeCount / 20)
+            var burstCount = 1
 
             for seq in 0..<opt.probeCount {
                 if seq % uiStride == 0 {
                     phase = .syncing(done: seq, total: opt.probeCount)
+                }
+
+                // ── 버스트 경계 ─────────────────────────────────────────────
+                //
+                // 휴식으로 다른 시간 창을 보고, 재개 직전 짧은 워밍업으로
+                // 절전 기동시간을 본 표본에서 제외합니다.
+                // 워밍업을 안 하면 각 버스트의 첫 왕복이 몇 ms 느려지는데,
+                // 우리는 최소값만 쓰므로 결과는 안 나빠지지만 분포가 오염됩니다.
+                if opt.burstSize > 0, seq > 0, seq % opt.burstSize == 0 {
+                    burstCount += 1
+                    try? await Task.sleep(nanoseconds: UInt64(opt.burstGapMs) * 1_000_000)
+                    for w in 0..<opt.burstWarmup {
+                        let wt1 = MonotonicClock.nowNs()
+                        // 음수 seq = 버리는 왕복. 초기 워밍업(-1-n)과 겹치지 않게 -1000 부터.
+                        try sendNoWait(WireCodec.encodeTimeReqLine(seq: -1000 - w, t1: wt1))
+                        _ = try await nextLine()
+                    }
                 }
 
                 // ★ t1 = 패킷 조립 직전. 고속 인코더라 여기서 µs 단위만 씁니다.
@@ -303,8 +363,8 @@ final class SyncClient: ObservableObject {
             profile = prof
 
             AppLog.shared.i("Sync", String(
-                format: "동기 완료 %d회 %.2f초 | 오프셋 %+.3fms | 최소RTT %.3fms | 상한 %.3fms | 흔들림 %.3fms",
-                samples.count, Double(elapsed) / 1e9,
+                format: "동기 완료 %d회 %.2f초 (버스트 %d개) | 오프셋 %+.3fms | 최소RTT %.3fms | 상한 %.3fms | 흔들림 %.3fms",
+                samples.count, Double(elapsed) / 1e9, burstCount,
                 est.offsetMs, est.minRttMs, est.uncertaintyMs, est.spreadMs))
             AppLog.shared.i("Sync", "판정: \(est.verdict())")
 
