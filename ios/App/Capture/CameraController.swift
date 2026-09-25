@@ -76,6 +76,46 @@ final class CameraController: @unchecked Sendable {
         var warnings: [String] = []
     }
 
+    // ── 방향 ────────────────────────────────────────────────────────────────
+    //
+    // ★ 2026-09-25 첫 실기기 촬영에서 발견한 함정
+    //
+    // 첫 영상이 90도 돌아가 저장됐습니다. 폰을 세로로 들고 찍으셨는데,
+    // 후면 카메라 센서의 기준 방향은 **가로**입니다. 우리는 회전 메타데이터를
+    // 일부러 넣지 않으므로(픽셀과 좌표계를 캘리브레이션과 맞추려고) 센서
+    // 방향 그대로 저장됩니다.
+    //
+    // 그런데 앱 미리보기(AVCaptureVideoPreviewLayer)는 자동으로 회전해
+    // 보여줍니다. 그래서 **화면으로는 정상인데 저장되는 픽셀은 돌아간** 상태가
+    // 됩니다. 사람이 눕혀 찍히면 2D 자세 추정 정확도가 크게 떨어집니다
+    // (RTMPose 는 똑바로 선 사람으로 학습됨).
+    //
+    // 회전 보정을 코드로 하지 않는 이유: 픽셀을 돌리면 재인코딩이 필요하고
+    // (화질 손실 + 시간), 메타데이터만 넣으면 PC 쪽 도구마다 해석이 달라져
+    // 캘리브레이션 좌표계가 어긋날 위험이 있습니다. 촬영 시 바르게 드는 것이
+    // 가장 확실합니다. 그래서 **경고로 알립니다.**
+
+    /// 현재 기기 방향이 "사람이 똑바로 찍히는" 방향인가.
+    static func isLandscapeNow() -> Bool {
+        switch UIDevice.current.orientation {
+        case .landscapeLeft, .landscapeRight: return true
+        default: return false
+        }
+    }
+
+    /// 사이드카·화면에 기록할 방향 이름.
+    static func orientationName() -> String {
+        switch UIDevice.current.orientation {
+        case .portrait: return "portrait"
+        case .portraitUpsideDown: return "portraitUpsideDown"
+        case .landscapeLeft: return "landscapeLeft"
+        case .landscapeRight: return "landscapeRight"
+        case .faceUp: return "faceUp"
+        case .faceDown: return "faceDown"
+        default: return "unknown"
+        }
+    }
+
     // ── 요구 사양 (DESIGN.md §3.10 의 결론) ──────────────────────────────────
     static let wantWidth = 1920
     static let wantHeight = 1080

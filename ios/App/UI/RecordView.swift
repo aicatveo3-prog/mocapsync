@@ -20,6 +20,8 @@ struct RecordView: View {
     /// 마지막으로 쓴 주소를 기억합니다. 매번 입력하게 하면 루프가 느려집니다.
     @AppStorage("mocapsync.uploadHost") private var uploadHost = ""
     @AppStorage("mocapsync.uploadPort") private var uploadPort = "9001"
+    /// 기기 방향. 세로로 들고 찍는 실수를 촬영 전에 잡기 위해 감시합니다.
+    @State private var isLandscape = CameraController.isLandscapeNow()
 
     var body: some View {
         ScrollView {
@@ -46,6 +48,10 @@ struct RecordView: View {
             }
         }
         .onDisappear { cap.stopSession() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIDevice.orientationDidChangeNotification)) { _ in
+                isLandscape = CameraController.isLandscapeNow()
+            }
         .sheet(isPresented: $showShare) {
             if !shareItems.isEmpty { ShareSheet(items: shareItems) }
         }
@@ -68,6 +74,33 @@ struct RecordView: View {
                         .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
                         .padding(8)
                 }
+
+            // ★ 세로로 들고 찍는 실수를 촬영 **전에** 잡습니다.
+            //
+            //   미리보기는 자동 회전해 보여주므로 화면으로는 정상처럼 보이지만,
+            //   저장되는 픽셀은 센서 기준(가로)이라 세로로 들면 90도 누워 저장됩니다.
+            //   2026-09-25 첫 촬영이 실제로 그렇게 찍혔고, 사람이 누워 찍히면
+            //   2D 자세 추정 정확도가 크게 떨어집니다.
+            if !isLandscape {
+                HStack(spacing: 8) {
+                    Image(systemName: "iphone.landscape")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("폰을 가로로 눕혀 주세요")
+                            .font(.subheadline.bold()).foregroundStyle(.orange)
+                        Text("""
+                             미리보기는 자동으로 돌려 보여주지만, 저장되는 영상은 \
+                             센서 기준(가로)입니다. 세로로 들면 사람이 90도 누워 \
+                             저장되고 자세 인식이 잘 안 됩니다.
+                             """)
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.16),
+                            in: RoundedRectangle(cornerRadius: 10))
+            }
 
             Text("삼각대에 고정하세요. 미리보기가 흔들리면 OIS 가 렌즈를 움직여 "
                  + "캘리브레이션이 틀어집니다.")

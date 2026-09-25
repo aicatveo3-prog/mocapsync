@@ -63,6 +63,13 @@ public struct Sidecar: Codable, Equatable, Sendable {
     /// 폰에서는 통과했는데 PC 에서 거부되는 일이 생깁니다.
     public static let assumedDriftPpm: Double = 40
 
+    /// 이 ISO 이상이면 노이즈가 2D 검출을 방해한다고 봅니다.
+    ///
+    /// 1/500초 셔터를 고정하면 어두운 곳에서 ISO 가 치솟습니다.
+    /// 2026-09-25 첫 실기기 촬영이 ISO 3072 였습니다 (실내, 조명 부족).
+    /// server/mocapsync/sidecar.py 의 HIGH_ISO_THRESHOLD 와 같아야 합니다.
+    public static let highIsoThreshold: Double = 2000
+
     // ── 형식 ────────────────────────────────────────────────────────────────
     public var schemaVersion: Int
 
@@ -116,6 +123,20 @@ public struct Sidecar: Codable, Equatable, Sendable {
     public var exposureLocked: Bool
     /// "off" / "standard" / "cinematic"
     public var stabilization: String
+    /// ★ 녹화 시작 시점의 기기 방향. "landscapeLeft" 등.
+    ///
+    /// 왜 기록하는가: 후면 카메라 센서 기준 방향은 가로입니다. 폰을 세로로
+    /// 들고 찍으면 저장되는 픽셀이 90도 돌아가고, 그러면 사람이 눕혀 찍혀
+    /// 2D 자세 추정 정확도가 크게 떨어집니다. 그런데 앱 미리보기는 자동
+    /// 회전해 보여주므로 촬영자는 알아채기 어렵습니다.
+    /// (2026-09-25 첫 실기기 촬영이 실제로 세로로 찍혔습니다)
+    public var deviceOrientation: String
+    /// 카메라가 잠그지 못한 것들 (OIS, ISO 상한 초과 등).
+    ///
+    /// 왜 사이드카에 넣는가: 지금까지 이 경고는 앱 화면에만 있었습니다.
+    /// 그러면 업로드된 파일만 봐서는 "왜 화질이 나쁜지" 알 수 없습니다.
+    /// 결과와 원인을 같은 파일에 담아야 나중에 추적이 됩니다.
+    public var cameraWarnings: [String]
 
     // ── 예약 시작 ───────────────────────────────────────────────────────────
     public var requestedStartAtMasterNs: Int64?
@@ -150,6 +171,8 @@ public struct Sidecar: Codable, Equatable, Sendable {
                 exposureDurationNs: Int64, iso: Double, lensPosition: Double,
                 focusLocked: Bool, whiteBalanceLocked: Bool, exposureLocked: Bool,
                 stabilization: String,
+                deviceOrientation: String = "unknown",
+                cameraWarnings: [String] = [],
                 requestedStartAtMasterNs: Int64? = nil,
                 requestedStartAtSlaveNs: Int64? = nil,
                 firstFramePtsNs: Int64? = nil,
@@ -187,6 +210,8 @@ public struct Sidecar: Codable, Equatable, Sendable {
         self.whiteBalanceLocked = whiteBalanceLocked
         self.exposureLocked = exposureLocked
         self.stabilization = stabilization
+        self.deviceOrientation = deviceOrientation
+        self.cameraWarnings = cameraWarnings
         self.requestedStartAtMasterNs = requestedStartAtMasterNs
         self.requestedStartAtSlaveNs = requestedStartAtSlaveNs
         self.firstFramePtsNs = firstFramePtsNs
@@ -476,6 +501,30 @@ public extension Sidecar {
             out.append(.init(.fatal, "virtual_camera",
                 "합성(가상) 카메라 '\(cameraDeviceType)' 로 촬영했습니다. "
                 + "촬영 중 렌즈가 바뀌면 초점거리·왜곡이 통째로 달라집니다."))
+        }
+
+        // ★ 세로로 들고 찍으면 사람이 눕혀 저장됩니다.
+        //   2D 자세 추정 모델은 똑바로 선 사람으로 학습됐으므로 정확도가 크게
+        //   떨어집니다. 미리보기는 자동 회전해 보여주므로 촬영자가 알아채기
+        //   어렵습니다 — 그래서 데이터로 잡습니다.
+        if deviceOrientation.hasPrefix("portrait") {
+            out.append(.init(.warning, "portrait_orientation",
+                "폰을 세로(\(deviceOrientation))로 들고 찍었습니다. 후면 카메라 기준 방향은 "
+                + "가로이므로 저장된 픽셀에서 사람이 90도 누워 있습니다. "
+                + "2D 자세 추정 정확도가 크게 떨어집니다. 폰을 가로로 눕혀 다시 찍으세요."))
+        }
+
+        // ISO 가 너무 높으면 노이즈가 2D 검출을 방해합니다.
+        // 1/500초 고정 때문에 어두운 곳에서는 ISO 가 치솟습니다.
+        if iso >= Sidecar.highIsoThreshold {
+            out.append(.init(.warning, "iso_too_high",
+                String(format: "ISO %.0f 로 매우 높습니다. 1/500초 셔터를 유지하려면 빛이 "
+                       + "많이 필요합니다. 노이즈가 2D 검출을 방해하므로 조명을 더 켜거나 "
+                       + "낮에 창가/야외에서 촬영하세요. (ISO 800 이하를 권합니다)", iso)))
+        }
+
+        for w in cameraWarnings {
+            out.append(.init(.info, "camera_warning", w))
         }
 
         if durationNs < 5 * NS.perSecond {

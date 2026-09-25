@@ -72,6 +72,8 @@ def valid_dict(frame_count: int = 600) -> dict:
         "whiteBalanceLocked": True,
         "exposureLocked": True,
         "stabilization": "off",
+        "deviceOrientation": "landscapeLeft",
+        "cameraWarnings": [],
         # 마스터시각 = 슬레이브시각 + 오프셋
         "requestedStartAtMasterNs": BASE_START_NS + 5_522_186_169_000,
         "requestedStartAtSlaveNs": BASE_START_NS,
@@ -494,6 +496,59 @@ def test_report_on_measured_sidecar_has_single_info():
     r = load(valid_dict()).validation_report()
     assert len(r) == 1, r
     assert r[0].startswith("[참고]"), r[0]
+
+
+def test_portrait_orientation_warns():
+    """
+    ★ 2026-09-25 첫 실기기 촬영이 세로로 찍혔습니다.
+    후면 카메라 기준 방향은 가로이므로 사람이 90도 누워 저장되고,
+    2D 자세 추정 모델은 똑바로 선 사람으로 학습됐으므로 정확도가 떨어집니다.
+    미리보기가 자동 회전해 보여줘서 촬영자는 알아채기 어렵습니다.
+    """
+    d = valid_dict()
+    d["deviceOrientation"] = "portrait"
+    s = load(d)
+    assert "portrait_orientation" in codes(s)
+    assert s.is_usable, "누워 있어도 데이터 자체는 쓸 수 있습니다 (정확도만 떨어짐)"
+
+
+def test_landscape_orientation_does_not_warn():
+    for o in ("landscapeLeft", "landscapeRight"):
+        d = valid_dict()
+        d["deviceOrientation"] = o
+        assert "portrait_orientation" not in codes(load(d)), o
+
+
+def test_high_iso_warns():
+    """
+    1/500초 셔터를 유지하려면 빛이 많이 필요합니다. 어두우면 ISO 가 치솟고
+    노이즈가 2D 검출을 방해합니다. 첫 실기기 촬영이 ISO 3072 였습니다.
+    """
+    d = valid_dict()
+    d["iso"] = 3072.0
+    s = load(d)
+    assert "iso_too_high" in codes(s)
+    assert s.is_usable
+
+
+def test_normal_iso_does_not_warn():
+    d = valid_dict()
+    d["iso"] = 640.0
+    assert "iso_too_high" not in codes(load(d))
+
+
+def test_camera_warnings_surface_as_info():
+    """
+    카메라가 잠그지 못한 것(OIS 등)은 지금까지 앱 화면에만 있었습니다.
+    업로드된 파일만 봐서는 원인을 알 수 없었으므로 사이드카에 담습니다.
+    """
+    d = valid_dict()
+    d["cameraWarnings"] = ["후면 광각에는 OIS 가 있고 끄는 API 가 없습니다."]
+    s = load(d)
+    issues = [i for i in s.validate() if i.code == "camera_warning"]
+    assert len(issues) == 1
+    assert issues[0].severity == "info"
+    assert "OIS" in issues[0].message
 
 
 def test_schema_version_mismatch_warns():

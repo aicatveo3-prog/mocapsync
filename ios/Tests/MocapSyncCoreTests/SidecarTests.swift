@@ -56,6 +56,8 @@ final class SidecarTests: XCTestCase {
             iso: 400, lensPosition: 0.42,
             focusLocked: true, whiteBalanceLocked: true, exposureLocked: true,
             stabilization: "off",
+            deviceOrientation: "landscapeLeft",
+            cameraWarnings: [],
             // 마스터시각 = 슬레이브시각 + 오프셋
             requestedStartAtMasterNs: 1_000_000_000_000 + 5_522_186_169_000,
             requestedStartAtSlaveNs: 1_000_000_000_000,
@@ -149,6 +151,7 @@ final class SidecarTests: XCTestCase {
             "fieldOfViewDeg", "isBinned", "exposureDurationNs", "iso",
             "lensPosition", "focusLocked", "whiteBalanceLocked",
             "exposureLocked", "stabilization",
+            "deviceOrientation", "cameraWarnings",
             "requestedStartAtMasterNs", "requestedStartAtSlaveNs",
             "firstFramePtsNs",
             "droppedFrameCount", "thermalAtStart", "thermalAtEnd",

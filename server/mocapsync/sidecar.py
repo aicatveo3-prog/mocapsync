@@ -69,6 +69,13 @@ SLEEP_NOISE_TOLERANCE_NS = 1 * NS_PER_MS
 #: 1/500초. 이보다 느리면 모션블러
 MAX_EXPOSURE_NS = 2_000_000
 
+#: 이 ISO 이상이면 노이즈가 2D 검출을 방해한다고 봅니다.
+#
+#  1/500초 셔터를 고정하면 어두운 곳에서 ISO 가 치솟습니다.
+#  2026-09-25 첫 실기기 촬영이 ISO 3072 였습니다 (실내, 조명 부족).
+#  ios 쪽 Sidecar.validate() 의 기준과 같아야 합니다.
+HIGH_ISO_THRESHOLD = 2000.0
+
 #: Swift 쪽 Sidecar 가 내보내는 키 전체.
 #: 테스트가 이 집합을 못박습니다. 한쪽만 바뀌면 드러나게 하는 장치입니다.
 #: ★ 없어도 정상인 키.
@@ -95,7 +102,7 @@ SIDECAR_KEYS: frozenset[str] = frozenset({
     "targetFps", "width", "height", "cameraDeviceType",
     "fieldOfViewDeg", "isBinned", "exposureDurationNs", "iso",
     "lensPosition", "focusLocked", "whiteBalanceLocked",
-    "exposureLocked", "stabilization",
+    "exposureLocked", "stabilization", "deviceOrientation", "cameraWarnings",
     "requestedStartAtMasterNs", "requestedStartAtSlaveNs", "firstFramePtsNs",
     "droppedFrameCount", "thermalAtStart", "thermalAtEnd",
     "batteryAtStart", "batteryAtEnd",
@@ -161,6 +168,8 @@ class Sidecar:
     white_balance_locked: bool = False
     exposure_locked: bool = False
     stabilization: str = ""
+    device_orientation: str = "unknown"
+    camera_warnings: list[str] = field(default_factory=list)
 
     requested_start_at_master_ns: int | None = None
     requested_start_at_slave_ns: int | None = None
@@ -265,6 +274,8 @@ class Sidecar:
             white_balance_locked=b("whiteBalanceLocked"),
             exposure_locked=b("exposureLocked"),
             stabilization=s("stabilization"),
+            device_orientation=s("deviceOrientation", "unknown"),
+            camera_warnings=[str(x) for x in (d.get("cameraWarnings") or [])],
             requested_start_at_master_ns=opt_i("requestedStartAtMasterNs"),
             requested_start_at_slave_ns=opt_i("requestedStartAtSlaveNs"),
             first_frame_pts_ns=opt_i("firstFramePtsNs"),
@@ -315,6 +326,8 @@ class Sidecar:
             "whiteBalanceLocked": self.white_balance_locked,
             "exposureLocked": self.exposure_locked,
             "stabilization": self.stabilization,
+            "deviceOrientation": self.device_orientation,
+            "cameraWarnings": self.camera_warnings,
             "requestedStartAtMasterNs": self.requested_start_at_master_ns,
             "requestedStartAtSlaveNs": self.requested_start_at_slave_ns,
             "firstFramePtsNs": self.first_frame_pts_ns,
@@ -590,6 +603,30 @@ class Sidecar:
                 "fatal", "virtual_camera",
                 f"합성(가상) 카메라 '{self.camera_device_type}' 로 촬영했습니다. "
                 "촬영 중 렌즈가 바뀌면 초점거리·왜곡이 통째로 달라집니다."))
+
+        # ★ 세로로 들고 찍으면 사람이 눕혀 저장됩니다.
+        #   2D 자세 추정 모델은 똑바로 선 사람으로 학습됐으므로 정확도가 크게
+        #   떨어집니다. 미리보기는 자동 회전해 보여주므로 촬영자가 알아채기
+        #   어렵습니다 — 그래서 데이터로 잡습니다.
+        #   (2026-09-25 첫 실기기 촬영이 실제로 세로로 찍혔습니다)
+        if self.device_orientation.startswith("portrait"):
+            out.append(Issue(
+                "warning", "portrait_orientation",
+                f"폰을 세로({self.device_orientation})로 들고 찍었습니다. 후면 카메라 "
+                "기준 방향은 가로이므로 저장된 픽셀에서 사람이 90도 누워 있습니다. "
+                "2D 자세 추정 정확도가 크게 떨어집니다. 폰을 가로로 눕혀 다시 찍으세요."))
+
+        # ISO 가 너무 높으면 노이즈가 2D 검출을 방해합니다.
+        # 1/500초 고정 때문에 어두운 곳에서는 ISO 가 치솟습니다.
+        if self.iso >= HIGH_ISO_THRESHOLD:
+            out.append(Issue(
+                "warning", "iso_too_high",
+                f"ISO {self.iso:.0f} 로 매우 높습니다. 1/500초 셔터를 유지하려면 빛이 "
+                "많이 필요합니다. 노이즈가 2D 검출을 방해하므로 조명을 더 켜거나 "
+                "낮에 창가/야외에서 촬영하세요. (ISO 800 이하를 권합니다)"))
+
+        for w in self.camera_warnings:
+            out.append(Issue("info", "camera_warning", w))
 
         if self.duration_ns < 5 * NS_PER_S:
             out.append(Issue(

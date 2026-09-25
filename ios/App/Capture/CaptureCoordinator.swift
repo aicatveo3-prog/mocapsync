@@ -371,6 +371,8 @@ final class CaptureCoordinator: ObservableObject {
             : (a.focusLocked ? "잠김" : "안 잠김 ★")) + "\n"
         s += "  화이트밸런스  \(a.whiteBalanceLocked ? "잠김" : "안 잠김 ★")\n"
         s += "  안정화        \(a.stabilization)\n"
+        s += "  기기 방향     \(CameraController.orientationName())"
+        s += CameraController.isLandscapeNow() ? "\n" : "   ★ 가로로 눕혀야 합니다\n"
         if !a.warnings.isEmpty {
             s += "  잠그지 못한 것:\n"
             for w in a.warnings { s += "    · \(w)\n" }

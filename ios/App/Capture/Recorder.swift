@@ -124,6 +124,7 @@ final class Recorder: NSObject, ObservableObject, @unchecked Sendable {
     private var batteryAtStart: Double = -1
     private var sleepAtRecordStartNs: Int64 = 0
     private var timestampDomainDeltaNs: Int64 = 0
+    private var deviceOrientationAtStart = "unknown"
 
     private let deviceId: String
     private let deviceName: String
@@ -237,6 +238,12 @@ final class Recorder: NSObject, ObservableObject, @unchecked Sendable {
         batteryAtStart = Double(UIDevice.current.batteryLevel)
         sleepAtRecordStartNs = MonotonicClock.cumulativeSleepNs()
         timestampDomainDeltaNs = Recorder.measureTimestampDomainDeltaNs()
+        // ★ 녹화 시작 시점의 기기 방향. 세로로 들고 찍으면 사람이 눕혀 저장됩니다.
+        deviceOrientationAtStart = CameraController.orientationName()
+        if !CameraController.isLandscapeNow() {
+            AppLog.shared.w("Rec", "★ 폰이 가로가 아닙니다 (\(deviceOrientationAtStart)). "
+                + "후면 카메라 기준 방향은 가로이므로 사람이 90도 누워 저장됩니다.")
+        }
 
         let dir = try Recorder.sessionDirectory(sessionId)
         let mov = dir.appendingPathComponent("\(deviceId).mov")
@@ -398,6 +405,8 @@ final class Recorder: NSObject, ObservableObject, @unchecked Sendable {
             whiteBalanceLocked: camera.whiteBalanceLocked,
             exposureLocked: camera.exposureLocked,
             stabilization: camera.stabilization,
+            deviceOrientation: deviceOrientationAtStart,
+            cameraWarnings: camera.warnings,
             requestedStartAtMasterNs: requestedStartAtMasterNs,
             requestedStartAtSlaveNs: startAtSlaveNs,
             firstFramePtsNs: firstFramePtsNs,
