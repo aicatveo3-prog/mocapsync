@@ -61,3 +61,5 @@ ios/*.ipa
 # 영상이 수십 MB 라 git 에 넣지 않습니다. 4단계 파이프라인의 입력 위치입니다.
 uploads/
 *.mov
+
+MASTER_ADDR.txt

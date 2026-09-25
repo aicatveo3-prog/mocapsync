@@ -469,6 +469,59 @@ async def advertise_mdns(port: int, server_id: str):
     return aiozc, info
 
 
+async def watch_ip_changes(aiozc, info, port: int, fh, interval_s: float = 5.0):
+    """
+    ★ IP 가 바뀌면 mDNS 광고를 다시 등록합니다.
+
+    왜 필요한가 (실제로 세 번 겪은 문제)
+
+    광고는 마스터를 켤 때 읽은 IP 로 한 번 등록됩니다. 그런데 노트북은
+    장소를 옮기거나 WiFi 를 바꾸면 IP 가 달라집니다.
+      192.168.219.50  ->  10.89.215.89  ->  172.30.1.28
+    그러면 폰은 **낡은 주소**를 받아 연결하지 못하고, 사람은 "마스터를 못 찾는다"
+    라는 증상만 보게 됩니다. 원인이 IP 변경이라는 걸 알기 어렵습니다.
+
+    TCP 는 0.0.0.0 으로 열려 있어 새 IP 로도 들어옵니다. 문제는 광고뿐이므로
+    광고만 갱신하면 됩니다.
+
+    5초 간격으로 확인합니다. 폴링이지만 비용이 거의 없고(로컬 인터페이스 조회),
+    네트워크 변경 이벤트를 크로스플랫폼으로 잡는 것보다 단순하고 확실합니다.
+    """
+    if aiozc is None or info is None:
+        return
+    known = set(local_ips())
+    while True:
+        await asyncio.sleep(interval_s)
+        now = set(local_ips())
+        if now == known or not now:
+            continue
+
+        log("", fh=fh)
+        log(f"★ IP 가 바뀌었습니다: {', '.join(sorted(known))} → "
+            f"{', '.join(sorted(now))}", fh=fh)
+        known = now
+        try:
+            info.addresses = [socket.inet_aton(ip) for ip in sorted(now)]
+            # 주소만 바뀌었으므로 갱신으로 충분합니다. 해제 후 재등록보다
+            # 빠르고, 폰이 탐색 중일 때 서비스가 사라지는 순간이 없습니다.
+            await aiozc.async_update_service(info)
+            log(f"mDNS 광고 갱신 완료  ip={', '.join(sorted(now))}", fh=fh)
+        except Exception as e:  # noqa: BLE001
+            log(f"광고 갱신 실패 ({type(e).__name__}: {e}) — 해제 후 재등록 시도", fh=fh)
+            try:
+                await aiozc.async_unregister_service(info)
+                await aiozc.async_register_service(info)
+                log(f"재등록 완료  ip={', '.join(sorted(now))}", fh=fh)
+            except Exception as e2:  # noqa: BLE001
+                log(f"★ 재등록도 실패 ({type(e2).__name__}: {e2}). "
+                    f"폰에서 IP 를 직접 입력하세요: {sorted(now)[0]}:{port}", fh=fh)
+        log(f"폰에 직접 입력할 주소: {sorted(now)[0]}:{port}", fh=fh)
+        with contextlib.suppress(OSError):
+            (LOG_DIR.parent / "MASTER_ADDR.txt").write_text(
+                f"{sorted(now)[0]}:{port}\n", encoding="utf-8")
+        log("", fh=fh)
+
+
 async def main_async(args) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"master_{datetime.now():%Y%m%d-%H%M%S}.log"
@@ -492,14 +545,26 @@ async def main_async(args) -> int:
     ips = local_ips()
     if ips:
         log(f"폰이 mDNS 로 못 찾으면 직접 입력: {ips[0]}:{args.port}", fh=fh)
+        # ★ 현재 주소를 파일로도 남깁니다.
+        #   장소를 옮길 때마다 "지금 주소가 뭐냐"를 로그에서 찾아야 했습니다.
+        #   고정된 경로에 한 줄로 써 두면 바로 확인할 수 있습니다.
+        with contextlib.suppress(OSError):
+            (LOG_DIR.parent / "MASTER_ADDR.txt").write_text(
+                f"{ips[0]}:{args.port}\n", encoding="utf-8")
     log("Ctrl+C 로 종료", fh=fh)
     log("", fh=fh)
+
+    # IP 변경 감시. 장소를 옮기거나 WiFi 를 바꿔도 광고가 따라갑니다.
+    watcher = asyncio.create_task(watch_ip_changes(aiozc, info, args.port, fh))
 
     try:
         await m.run()
     except asyncio.CancelledError:
         pass
     finally:
+        watcher.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await watcher
         if aiozc and info:
             with contextlib.suppress(Exception):
                 await aiozc.async_unregister_service(info)
