@@ -89,6 +89,30 @@ final class WireProtocolTests: XCTestCase {
 
     /// 측정 설정 문자열이 그대로 실려 나가는지.
     /// 이게 비면 마스터 로그에 "무슨 조건의 숫자인지"가 남지 않습니다.
+    /// 업로드 예고 메시지의 키를 못박습니다.
+    /// 키가 어긋나면 마스터가 size 를 0 으로 읽고, 그러면 파일이 빈 채로 저장됩니다.
+    func testUploadBeginKeys() throws {
+        let d = try WireCodec.encodeLine(UploadBeginMsg(
+            sessionId: "S20260925-1", name: "ABC.json", size: 30_517))
+        let j = try json(d)
+        XCTAssertEqual(j["type"] as? String, "upload_begin")
+        XCTAssertEqual(j["sessionId"] as? String, "S20260925-1")
+        XCTAssertEqual(j["name"] as? String, "ABC.json")
+        XCTAssertEqual(j["size"] as? Int, 30_517)
+        XCTAssertEqual(Set(j.keys), ["type", "sessionId", "name", "size", "sha256"])
+    }
+
+    func testUploadResponsesDecode() throws {
+        let ready = Data(#"{"type":"upload_ready","name":"A.json"}"#.utf8)
+        XCTAssertEqual(try WireCodec.typeOf(ready), "upload_ready")
+        XCTAssertEqual(try WireCodec.decode(UploadReadyMsg.self, from: ready).name, "A.json")
+
+        let done = Data(#"{"type":"upload_done","name":"A.json","size":30517,"ok":true,"message":""}"#.utf8)
+        let d = try WireCodec.decode(UploadDoneMsg.self, from: done)
+        XCTAssertEqual(d.ok, true)
+        XCTAssertEqual(d.size, 30_517)
+    }
+
     func testTimeResultCarriesConfigString() throws {
         let est = SyncEstimate(
             offsetNs: 0, minRttNs: 1, uncertaintyNs: 0, spreadNs: 0,

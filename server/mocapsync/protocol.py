@@ -50,6 +50,21 @@ class T:
     STOP = "stop"
     STATUS = "status"
     ERROR = "error"
+    # ── 파일 업로드 ─────────────────────────────────────────────────────────
+    #
+    # ★ 왜 규약에 넣는가
+    #
+    # 3단계까지 만든 영상과 사이드카를 PC 로 옮길 방법이 없었습니다.
+    # USB 경로(iTunes 파일 공유 / pymobiledevice3)를 검토했지만
+    #   · iTunes 는 사람이 매번 GUI 를 조작해야 하고
+    #   · pymobiledevice3 는 Windows 에서 C 컴파일러를 요구해 설치가 막혔습니다
+    # 어차피 4단계가 WiFi 업로드이므로 그걸 먼저 만듭니다.
+    #
+    # 무엇보다 마스터가 받은 사이드카를 Python 검증기에 바로 넣어 판정을 찍으면,
+    # Swift/Python 두 구현이 실제로 같은 판정을 내는지 자동으로 확인됩니다.
+    UPLOAD_BEGIN = "upload_begin"
+    UPLOAD_READY = "upload_ready"
+    UPLOAD_DONE = "upload_done"
 
 
 # ── 인코딩 / 디코딩 ───────────────────────────────────────────────────────────
@@ -137,6 +152,31 @@ def time_result(est, prof=None, config: str = "") -> dict:
         #   사용자가 "무슨 설정으로 쟀는지" 말해주지 않아도 로그에 남습니다.
         "config": config,
     }
+
+
+def upload_begin(session_id: str, name: str, size: int, sha256: str = "") -> dict:
+    """
+    파일 하나를 보내겠다는 예고.
+
+    이 줄 다음에 **정확히 size 바이트의 원본 데이터**가 옵니다.
+    줄 단위 JSON 규약 안에 이진 데이터를 섞는 방법입니다 — 수신측이
+    readexactly(size) 로 정확히 그만큼만 읽으면 다시 줄 모드로 돌아옵니다.
+
+    base64 로 감싸지 않는 이유: 영상이 수십 MB 라 33% 증가가 그대로 전송 시간과
+    메모리에 반영됩니다. 핫스팟처럼 느린 링크에서는 체감이 큽니다.
+    """
+    return {"type": T.UPLOAD_BEGIN, "sessionId": session_id,
+            "name": name, "size": size, "sha256": sha256}
+
+
+def upload_ready(name: str) -> dict:
+    """받을 준비가 됐다. 이제 원본 바이트를 보내라."""
+    return {"type": T.UPLOAD_READY, "name": name}
+
+
+def upload_done(name: str, size: int, ok: bool, message: str = "") -> dict:
+    return {"type": T.UPLOAD_DONE, "name": name, "size": size,
+            "ok": ok, "message": message}
 
 
 def schedule_start(session_id: str, start_at_master_ns: int, *,

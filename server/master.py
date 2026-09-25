@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mocapsync import clocksync as cs  # noqa: E402
 from mocapsync import protocol as P  # noqa: E402
+from mocapsync import sidecar  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -106,6 +107,9 @@ class Master:
         self.server_id = uuid.uuid4().hex[:12]
         self.slaves: dict[str, Slave] = {}
         self.session_seq = 0
+        # 업로드 받을 곳. 4단계 파이프라인이 여기를 입력으로 씁니다.
+        self.upload_root = Path(__file__).resolve().parent.parent / "uploads"
+        self.upload_root.mkdir(parents=True, exist_ok=True)
 
     # ── 연결 처리 ────────────────────────────────────────────────────────────
     async def handle(self, reader: asyncio.StreamReader,
@@ -207,6 +211,10 @@ class Master:
                     log("", fh=self.fh)
                     continue
 
+                if t == P.T.UPLOAD_BEGIN:
+                    await self._receive_file(reader, writer, sl, msg)
+                    continue
+
                 if t == P.T.STATUS:
                     sl.state = str(msg.get("state", "?"))
                     extras = []
@@ -246,6 +254,118 @@ class Master:
             with contextlib.suppress(Exception):
                 writer.close()
                 await writer.wait_closed()
+
+    async def _receive_file(self, reader: asyncio.StreamReader,
+                            writer: asyncio.StreamWriter,
+                            sl: "Slave", msg: dict) -> None:
+        """
+        업로드 한 건을 받습니다.
+
+        규약: `upload_begin` 줄 다음에 **정확히 size 바이트의 원본 데이터**가 옵니다.
+        readexactly 로 그만큼만 읽으면 다시 줄 모드로 돌아옵니다.
+
+        ★ 사이드카(.json)를 받으면 그 자리에서 Python 검증기에 넣어 판정을 찍습니다.
+          왜: 폰(Swift)과 PC(Python)의 검증 구현이 같은 판정을 내야 하는데,
+          지금까지는 그걸 실제 데이터로 확인한 적이 없었습니다. 업로드마다
+          자동으로 대조되면 두 구현이 갈라지는 순간 드러납니다.
+        """
+        name = str(msg.get("name", "")).strip()
+        size = int(msg.get("size", 0))
+        session_id = str(msg.get("sessionId", "")) or "unknown"
+
+        # ★ 경로 탈출 방어. 이름은 파일명으로만 씁니다.
+        #   "../../.." 같은 이름이 오면 저장 위치를 벗어납니다.
+        safe = Path(name).name
+        if not safe or safe in (".", ".."):
+            writer.write(P.encode(P.upload_done(name, 0, False, "이름이 비었습니다")))
+            await writer.drain()
+            return
+        safe_session = Path(session_id).name or "unknown"
+
+        if size < 0 or size > 4 * 1024 * 1024 * 1024:
+            writer.write(P.encode(P.upload_done(safe, 0, False, f"크기가 이상합니다: {size}")))
+            await writer.drain()
+            return
+
+        out_dir = self.upload_root / safe_session
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dest = out_dir / safe
+        tmp = dest.with_suffix(dest.suffix + ".part")
+
+        log(f"    업로드 시작: {safe}  {size / 1_048_576:.2f} MB", fh=self.fh)
+        writer.write(P.encode(P.upload_ready(safe)))
+        await writer.drain()
+
+        t0 = P.now_ns()
+        got = 0
+        try:
+            with open(tmp, "wb") as f:
+                while got < size:
+                    chunk = await reader.readexactly(min(256 * 1024, size - got))
+                    f.write(chunk)
+                    got += len(chunk)
+        except asyncio.IncompleteReadError as e:
+            got += len(e.partial)
+            log(f"    ★ 업로드 중단: {got}/{size} 바이트", fh=self.fh)
+            tmp.unlink(missing_ok=True)
+            return
+        except Exception as e:  # noqa: BLE001
+            log(f"    ★ 업로드 실패: {e}", fh=self.fh)
+            tmp.unlink(missing_ok=True)
+            return
+
+        tmp.replace(dest)
+        dt = (P.now_ns() - t0) / 1e9
+        mbps = (size * 8 / 1e6 / dt) if dt > 0 else 0
+        log(f"    업로드 완료: {dest}  {dt:.1f}초  {mbps:.1f} Mbps", fh=self.fh)
+
+        writer.write(P.encode(P.upload_done(safe, got, True)))
+        await writer.drain()
+
+        if safe.lower().endswith(".json"):
+            self._validate_uploaded_sidecar(dest)
+
+    def _validate_uploaded_sidecar(self, path: Path) -> None:
+        """
+        받은 사이드카를 Python 검증기로 판정합니다.
+
+        ★ 이게 Swift/Python 구현 일치의 실전 검증입니다.
+          폰 화면에 찍힌 판정과 여기 판정이 같아야 합니다. 다르면 두 구현이
+          갈라진 것이고, 그건 테스트가 잡지 못한 차이라는 뜻입니다.
+        """
+        try:
+            sc = sidecar.Sidecar.load(path)
+        except Exception as e:  # noqa: BLE001
+            log(f"    ★ 사이드카를 읽을 수 없습니다: {e}", fh=self.fh)
+            return
+
+        st = sc.interval_stats()
+        log("", fh=self.fh)
+        log(f"    ┌─ 사이드카 검증 (PC/Python): {path.name}", fh=self.fh)
+        log(f"    │  기기        {sc.device_id}  {sc.model}  앱 {sc.app_version}", fh=self.fh)
+        log(f"    │  세션        {sc.session_id}", fh=self.fh)
+        log(f"    │  프레임      {sc.frame_count}개  길이 {sc.duration_ns / 1e9:.2f}초", fh=self.fh)
+        log(f"    │  실측 fps    {st.get('estimated_fps', 0):.3f}  "
+            f"(목표 {sc.target_fps})", fh=self.fh)
+        log(f"    │  간격        중앙 {st.get('median_interval_ms', 0):.3f} ms  "
+            f"최소 {st.get('min_interval_ms', 0):.3f}  "
+            f"최대 {st.get('max_interval_ms', 0):.3f}  "
+            f"표준편차 {st.get('stdev_interval_ms', 0):.3f}", fh=self.fh)
+        log(f"    │  드롭 의심   {st.get('suspected_drops', 0)}곳  "
+            f"(카메라 보고 {sc.dropped_frame_count}개)", fh=self.fh)
+        log(f"    │  해상도      {sc.width}x{sc.height}  화각 {sc.field_of_view_deg:.1f}도  "
+            f"binned={sc.is_binned}", fh=self.fh)
+        log(f"    │  셔터        {sc.exposure_duration_ns / 1000:.0f} µs  "
+            f"ISO {sc.iso:.0f}  렌즈 {sc.lens_position:.3f}", fh=self.fh)
+        log(f"    │  잠금        노출={sc.exposure_locked} 초점={sc.focus_locked} "
+            f"WB={sc.white_balance_locked} 안정화={sc.stabilization}", fh=self.fh)
+        log(f"    │  오프셋      {sc.clock_offset_ns / cs.NS_PER_MS:+.3f} ms  "
+            f"상한 {sc.clock_uncertainty_ns / cs.NS_PER_MS:.3f} ms", fh=self.fh)
+        log(f"    │  발열        {sc.thermal_at_start} → {sc.thermal_at_end}", fh=self.fh)
+        for line_ in sc.validation_report():
+            log(f"    │  {line_}", fh=self.fh)
+        log(f"    └─ 판정: {'사용 가능 ✔' if sc.is_usable else '★ 사용 불가'}", fh=self.fh)
+        log("", fh=self.fh)
 
     def _log_rtt_profile(self, msg: dict, total: int) -> None:
         """

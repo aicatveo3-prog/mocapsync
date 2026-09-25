@@ -29,6 +29,15 @@ public enum Wire {
         case stop
         case status
         case error
+        // ── 파일 업로드 ─────────────────────────────────────────────────────
+        //
+        // 3단계까지 만든 영상과 사이드카를 PC 로 옮길 방법이 없었습니다.
+        // USB 경로는 iTunes GUI 수동 조작이 필요하거나(사람 손), Windows 에서
+        // pymobiledevice3 설치가 C 컴파일러를 요구해 막혔습니다.
+        // 어차피 4단계가 WiFi 업로드이므로 그걸 먼저 만듭니다.
+        case uploadBegin = "upload_begin"
+        case uploadReady = "upload_ready"
+        case uploadDone = "upload_done"
     }
 }
 
@@ -168,6 +177,29 @@ public struct StartNackMsg: Encodable {
     }
 }
 
+/// 파일 하나를 보내겠다는 예고.
+///
+/// ★ 이 줄 다음에 **정확히 size 바이트의 원본 데이터**를 그대로 보냅니다.
+///   줄 단위 JSON 규약 안에 이진 데이터를 섞는 방법입니다. 수신측이
+///   그만큼만 정확히 읽고 나면 다시 줄 모드로 돌아옵니다.
+///
+///   base64 로 감싸지 않는 이유: 영상이 수십 MB 라 33% 증가가 전송 시간과
+///   메모리에 그대로 반영됩니다. 핫스팟처럼 느린 링크에서 체감이 큽니다.
+public struct UploadBeginMsg: Encodable {
+    public let type = Wire.MsgType.uploadBegin.rawValue
+    public let sessionId: String
+    public let name: String
+    public let size: Int
+    public let sha256: String
+
+    public init(sessionId: String, name: String, size: Int, sha256: String = "") {
+        self.sessionId = sessionId
+        self.name = name
+        self.size = size
+        self.sha256 = sha256
+    }
+}
+
 // MARK: - 받는 메시지
 
 public struct HelloAckMsg: Decodable {
@@ -199,6 +231,17 @@ public struct ScheduleStartMsg: Decodable {
 
 public struct ErrorMsg: Decodable {
     public let code: String?
+    public let message: String?
+}
+
+public struct UploadReadyMsg: Decodable {
+    public let name: String?
+}
+
+public struct UploadDoneMsg: Decodable {
+    public let name: String?
+    public let size: Int?
+    public let ok: Bool?
     public let message: String?
 }
 

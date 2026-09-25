@@ -16,6 +16,10 @@ struct RecordView: View {
     @State private var showShare = false
     @State private var selectedSession: String?
     @State private var copied = false
+    @StateObject private var uploader = Uploader(deviceId: CaptureCoordinator.stableDeviceId())
+    /// 마지막으로 쓴 주소를 기억합니다. 매번 입력하게 하면 루프가 느려집니다.
+    @AppStorage("mocapsync.uploadHost") private var uploadHost = ""
+    @AppStorage("mocapsync.uploadPort") private var uploadPort = "9001"
 
     var body: some View {
         ScrollView {
@@ -418,7 +422,15 @@ struct RecordView: View {
                         HStack {
                             Text(sid).font(.caption.bold())
                             Spacer()
-                            Button("내보내기") {
+                            Button("PC로 전송") {
+                                uploader.upload(sessionId: sid,
+                                                files: cap.files(in: sid),
+                                                host: uploadHost,
+                                                port: UInt16(uploadPort) ?? Wire.defaultPort)
+                            }
+                            .font(.caption.bold())
+                            .disabled(uploader.phase.isBusy || uploadHost.isEmpty)
+                            Button("공유") {
                                 shareItems = cap.files(in: sid)
                                 showShare = !shareItems.isEmpty
                             }
@@ -438,6 +450,59 @@ struct RecordView: View {
             }
             Button("목록 새로고침") { cap.refreshSessions() }
                 .font(.caption).padding(.top, 6)
+
+            Divider().padding(.vertical, 6)
+
+            // ── PC 전송 ─────────────────────────────────────────────────────
+            Text("PC 마스터 주소").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                TextField("10.89.215.89", text: $uploadHost)
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numbersAndPunctuation)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                TextField("9001", text: $uploadPort)
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numberPad)
+                    .frame(width: 80)
+            }
+
+            switch uploader.phase {
+            case .sending(let name, let sent, let total):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(name).font(.caption2.monospaced())
+                    ProgressView(value: Double(sent), total: Double(max(total, 1)))
+                    Text(String(format: "%.2f / %.2f MB",
+                                Double(sent) / 1_048_576, Double(total) / 1_048_576))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                .padding(.top, 6)
+            case .connecting:
+                HStack { ProgressView(); Text("연결 중...").font(.caption) }.padding(.top, 6)
+            case .finished(let f, let b):
+                Text(String(format: "전송 완료: %d개, %.2f MB", f, Double(b) / 1_048_576))
+                    .font(.caption).foregroundStyle(.green).padding(.top, 6)
+            case .failed(let m):
+                Text("전송 실패: \(m)")
+                    .font(.caption).foregroundStyle(.red).padding(.top, 6)
+            default:
+                EmptyView()
+            }
+
+            if !uploader.log.isEmpty {
+                Text(uploader.log.suffix(6).joined(separator: "\n"))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary).padding(.top, 4)
+            }
+
+            Text("""
+                 ★ 사이드카(.json)를 영상보다 먼저 보냅니다. 영상은 수십 MB 라 \
+                 느린 링크에서 오래 걸리는데, 전송이 중간에 끊겨도 사이드카가 \
+                 도착해 있으면 PC 가 검증 결과를 보여줄 수 있습니다.
+                 PC 마스터가 받은 사이드카를 자체 검증기로 다시 판정하므로, \
+                 폰과 PC 의 판정이 같은지도 자동으로 대조됩니다.
+                 """)
+                .font(.caption2).foregroundStyle(.secondary).padding(.top, 6)
         }
     }
 
