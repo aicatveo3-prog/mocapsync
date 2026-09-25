@@ -160,6 +160,43 @@ final class SidecarTests: XCTestCase {
             + Set(j.keys).symmetricDifference(expected).sorted().joined(separator: ", "))
     }
 
+    /// ★ 2026-09-25 첫 실기기 업로드에서 발견한 사각지대.
+    ///
+    /// JSONEncoder 는 nil Optional 을 **키째로 생략**합니다 (null 을 쓰지 않음).
+    /// 그래서 예약 없이 "바로 녹화"하면 requestedStartAt* 가 아예 안 나갑니다.
+    /// 그게 정상 동작인데, PC 쪽이 모든 키를 필수로 취급해서 정상 촬영에도
+    /// "없는 키" 경고가 붙었습니다.
+    ///
+    /// 픽스처가 세 키를 모두 채워 넣어서 이 경우를 시험하지 않았습니다.
+    /// 여기서 "생략된다"는 사실 자체를 못박아 두면, PC 쪽 선택 키 목록과
+    /// 어긋나는 순간 드러납니다.
+    func testNilOptionalsAreOmittedFromJSON() throws {
+        var s = makeValid(frameCount: 3)
+        s.requestedStartAtMasterNs = nil
+        s.requestedStartAtSlaveNs = nil
+        let j = try JSONSerialization.jsonObject(with: try s.encoded()) as! [String: Any]
+
+        XCTAssertFalse(j.keys.contains("requestedStartAtMasterNs"),
+                       "nil 인데 키가 들어갔습니다. PC 쪽 선택 키 처리와 어긋납니다")
+        XCTAssertFalse(j.keys.contains("requestedStartAtSlaveNs"))
+        // 나머지 키는 그대로 있어야 합니다
+        XCTAssertTrue(j.keys.contains("firstFramePtsNs"))
+        XCTAssertTrue(j.keys.contains("clockOffsetNs"))
+
+        // 그리고 그 상태로도 경고 없이 통과해야 합니다
+        XCTAssertEqual(s.validate().filter { $0.severity != .info }, [],
+                       "바로 녹화가 경고를 내면 안 됩니다: \(s.validationReport())")
+    }
+
+    /// 예약 정보가 없으면 예약 관련 판정을 건너뛰어야 합니다.
+    func testNoScheduleMeansNoScheduleChecks() {
+        var s = makeValid()
+        s.requestedStartAtSlaveNs = nil
+        let c = codes(s)
+        XCTAssertFalse(c.contains("started_early"))
+        XCTAssertFalse(c.contains("started_late"))
+    }
+
     /// 프레임이 [번호, 시각] 2개 배열로 나가는지. 객체 배열이 되면 크기가 2배 됩니다.
     func testFramesAreArrayPairs() throws {
         let d = try makeValid(frameCount: 3).encoded()

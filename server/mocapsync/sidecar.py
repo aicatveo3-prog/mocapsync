@@ -71,6 +71,20 @@ MAX_EXPOSURE_NS = 2_000_000
 
 #: Swift 쪽 Sidecar 가 내보내는 키 전체.
 #: 테스트가 이 집합을 못박습니다. 한쪽만 바뀌면 드러나게 하는 장치입니다.
+#: ★ 없어도 정상인 키.
+#
+#  Swift 의 JSONEncoder 는 nil Optional 을 **키째로 생략**합니다 (null 을 쓰지 않음).
+#  그래서 예약 시작 없이 "바로 녹화"를 하면 아래 키들이 아예 안 들어옵니다.
+#  이건 정상 동작인데, 처음에 모든 키를 필수로 취급해서 정상 촬영에도
+#  "없는 키" 경고가 붙었습니다 (2026-09-25 첫 실기기 업로드에서 발견).
+#
+#  firstFramePtsNs 도 녹화가 예약 대기 중 취소되면 nil 이 될 수 있습니다.
+SIDECAR_OPTIONAL_KEYS: frozenset[str] = frozenset({
+    "requestedStartAtMasterNs",
+    "requestedStartAtSlaveNs",
+    "firstFramePtsNs",
+})
+
 SIDECAR_KEYS: frozenset[str] = frozenset({
     "schemaVersion",
     "deviceId", "deviceName", "model", "osVersion", "appVersion",
@@ -176,11 +190,13 @@ class Sidecar:
         """
         issues: list[Issue] = []
 
-        missing = SIDECAR_KEYS - set(d.keys())
+        # ★ 선택 키는 없어도 정상입니다 (Swift 가 nil 을 키째로 생략).
+        #   예약 시작 없이 "바로 녹화"하면 requestedStartAt* 가 안 들어옵니다.
+        missing = SIDECAR_KEYS - SIDECAR_OPTIONAL_KEYS - set(d.keys())
         if missing:
             issues.append(Issue(
                 "warning", "missing_keys",
-                f"사이드카에 없는 키: {', '.join(sorted(missing))}"))
+                f"사이드카에 없는 필수 키: {', '.join(sorted(missing))}"))
         extra = set(d.keys()) - SIDECAR_KEYS
         if extra:
             issues.append(Issue(

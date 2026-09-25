@@ -203,6 +203,37 @@ def test_missing_keys_reported_not_raised():
     assert "clockOffsetNs" in msg and "stabilization" in msg
 
 
+def test_immediate_recording_omits_scheduled_keys_without_warning():
+    """
+    ★ 2026-09-25 첫 실기기 업로드에서 발견한 오탐.
+
+    Swift 의 JSONEncoder 는 nil Optional 을 키째로 생략합니다(null 을 쓰지 않음).
+    그래서 예약 없이 "바로 녹화"하면 requestedStartAt* 가 아예 안 들어옵니다.
+    이건 정상인데, 모든 키를 필수로 취급해서 정상 촬영에도 경고가 붙었습니다.
+
+    테스트 픽스처는 세 키를 모두 채워 넣어서 이 경우를 시험하지 않았습니다.
+    """
+    d = valid_dict(600)
+    del d["requestedStartAtMasterNs"]
+    del d["requestedStartAtSlaveNs"]
+    s = load(d)
+    assert "missing_keys" not in codes(s), s.validation_report()
+    # 선택 키가 없으면 예약 관련 판정도 건너뜁니다
+    assert "started_early" not in codes(s)
+    assert "started_late" not in codes(s)
+    assert [i for i in s.validate() if i.severity != "info"] == [], s.validation_report()
+
+
+def test_missing_first_frame_pts_is_not_warned():
+    d = valid_dict(600)
+    del d["firstFramePtsNs"]
+    assert "missing_keys" not in codes(load(d))
+
+
+def test_optional_keys_are_subset_of_all_keys():
+    assert sc.SIDECAR_OPTIONAL_KEYS <= sc.SIDECAR_KEYS
+
+
 def test_extra_keys_are_info_only():
     d = valid_dict(10)
     d["futureField"] = 123
