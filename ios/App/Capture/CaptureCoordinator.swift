@@ -312,6 +312,92 @@ final class CaptureCoordinator: ObservableObject {
         refreshSessions()
     }
 
+    // MARK: - 진단 텍스트
+
+    /// ★ 개발자에게 붙여줄 진단 한 덩어리.
+    ///
+    /// 왜 이게 필요한가: 실기기 확인을 사람이 대신하는 구조에서, 필요한 정보를
+    /// 화면에서 하나하나 찾아 옮겨 적게 하면 루프가 느려지고 빠뜨리기도 쉽습니다.
+    /// 실제로 3단계 시험에서 "사용 불가"라는 결과만 전달되고 사유가 빠져서
+    /// 두 번 추측해야 했습니다.
+    ///
+    /// 그래서 한 번 눌러 전부 복사되게 만듭니다. 성공했을 때도 필요합니다 —
+    /// 검증을 통과했어도 fps 나 셔터가 틀렸으면 경고만 뜨고 지나가기 때문입니다.
+    func diagnosticText() -> String {
+        var s = ""
+        s += "── MocapSync 촬영 진단 ──\n"
+        s += "빌드      \(BuildInfo.versionFull)\n"
+        s += "기기      \(BuildInfo.deviceFriendlyName) (\(BuildInfo.deviceModelIdentifier)) / iOS \(BuildInfo.osVersion)\n"
+        s += "발열      \(Recorder.thermalName())\n\n"
+
+        s += "[클럭 동기]\n"
+        s += "  상태            \(syncFreshness.summary)\n"
+        if let r = SyncStore.shared.latest {
+            s += String(format: "  오프셋          %+.3f ms\n", r.offsetNs.ms)
+            s += String(format: "  측정 당시 상한  %.3f ms (최소RTT %.3f ms)\n",
+                        r.uncertaintyNs.ms, r.minRttNs.ms)
+            s += String(format: "  드리프트 포함   %.3f ms\n",
+                        SyncStore.shared.displayEffectiveUncertaintyNs.ms)
+            if let ppm = SyncStore.shared.measuredDriftPpm,
+               let unc = SyncStore.shared.driftUncertaintyPpm {
+                s += String(format: "  드리프트 실측   %+.2f ppm (신뢰구간 ±%.2f ppm)%@\n",
+                            ppm, unc, abs(ppm) > unc ? "" : "  <- 잡음 안, 측정 불가")
+            } else {
+                s += "  드리프트 실측   아직 (두 번 측정하면 나옴)\n"
+            }
+        } else {
+            s += "  (측정 없음)\n"
+        }
+        s += "\n"
+
+        let a = applied
+        s += "[잠긴 카메라 설정 — 실제 적용값]\n"
+        s += "  카메라        \(a.deviceType)\n"
+        s += "  해상도        \(a.width)x\(a.height) @\(a.fps)fps\n"
+        s += String(format: "  화각          %.1f도\n", a.fieldOfViewDeg)
+        s += "  binned        \(a.isBinned ? "예 (해상감 저하)" : "아니오")\n"
+        if a.exposureDurationNs > 0 {
+            s += String(format: "  셔터          %.0f µs = 1/%.0f초\n",
+                        Double(a.exposureDurationNs) / 1000,
+                        1e9 / Double(a.exposureDurationNs))
+        } else {
+            s += "  셔터          (읽지 못함)\n"
+        }
+        s += String(format: "  ISO           %.0f\n", a.iso)
+        s += String(format: "  렌즈 위치     %.3f\n", a.lensPosition)
+        s += "  노출 고정     \(a.exposureLocked ? "예" : "아니오 ★")\n"
+        s += "  초점          " + (a.isFixedFocusLens
+            ? "고정초점 렌즈 (잠글 기구 없음 — 정상)"
+            : (a.focusLocked ? "잠김" : "안 잠김 ★")) + "\n"
+        s += "  화이트밸런스  \(a.whiteBalanceLocked ? "잠김" : "안 잠김 ★")\n"
+        s += "  안정화        \(a.stabilization)\n"
+        if !a.warnings.isEmpty {
+            s += "  잠그지 못한 것:\n"
+            for w in a.warnings { s += "    · \(w)\n" }
+        }
+        s += "\n"
+
+        s += "[마지막 녹화]\n"
+        s += "  프레임        \(recorder.displayFrameCount)\n"
+        s += String(format: "  실측 fps      %.3f\n", recorder.displayFps)
+        s += "  버린 프레임   \(recorder.displayDroppedCount)\n"
+        if let m = lastMovie {
+            let attrs = try? FileManager.default.attributesOfItem(atPath: m.path)
+            let bytes = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            s += String(format: "  파일          %@ (%.1f MB)\n",
+                        m.lastPathComponent, Double(bytes) / 1_048_576)
+        }
+        s += "\n"
+
+        s += "[사이드카 자체검증] \(recorder.lastUsable ? "사용 가능 ✔" : "★ 사용 불가")\n"
+        if recorder.lastValidation.isEmpty {
+            s += "  (아직 녹화하지 않았습니다)\n"
+        } else {
+            for l in recorder.lastValidation { s += "  \(l)\n" }
+        }
+        return s
+    }
+
     /// 남은 저장 공간 (바이트)
     static func freeSpaceBytes() -> Int64 {
         guard let v = try? URL(fileURLWithPath: NSHomeDirectory())

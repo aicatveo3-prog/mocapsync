@@ -15,6 +15,7 @@ struct RecordView: View {
     @State private var shareItems: [URL] = []
     @State private var showShare = false
     @State private var selectedSession: String?
+    @State private var copied = false
 
     var body: some View {
         ScrollView {
@@ -26,6 +27,7 @@ struct RecordView: View {
                 if !cap.recorder.lastValidation.isEmpty { validationCard }
                 settingsCard
                 if !cap.applied.warnings.isEmpty { warningCard }
+                diagnosticCard
                 sessionsCard
                 explainCard
             }
@@ -304,18 +306,6 @@ struct RecordView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.red.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
 
-                Button {
-                    UIPasteboard.general.string =
-                        "MocapSync \(BuildInfo.versionFull)\n" + lines.joined(separator: "\n")
-                } label: {
-                    Text("검증 결과 복사 (개발자에게 붙여주세요)")
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity).padding(.vertical, 10)
-                        .background(Color.blue.opacity(0.8),
-                                    in: RoundedRectangle(cornerRadius: 10))
-                        .foregroundStyle(.white)
-                }
-                .padding(.top, 8)
             }
 
             Divider().padding(.vertical, 6)
@@ -369,6 +359,50 @@ struct RecordView: View {
             ForEach(Array(cap.applied.warnings.enumerated()), id: \.offset) { _, w in
                 Text("· " + w).font(.caption).foregroundStyle(.orange)
             }
+        }
+    }
+
+    // MARK: - 진단 복사 ★ 개발 루프용
+
+    /// ★ 한 번 눌러 필요한 정보 전부를 클립보드에 담습니다.
+    ///
+    /// 개발자가 실기기를 만질 수 없으므로, 화면에서 값을 하나하나 찾아 옮겨 적게
+    /// 하면 루프가 느려지고 빠뜨리기도 쉽습니다. 실제로 3단계 시험에서
+    /// "사용 불가"라는 결과만 전달되고 사유가 빠져서 두 번 추측해야 했습니다.
+    ///
+    /// **성공했을 때도 필요합니다.** 검증을 통과했어도 fps 가 30 으로 잡혔거나
+    /// 셔터가 느리면 경고만 뜨고 지나갑니다. 숫자를 봐야 알 수 있습니다.
+    private var diagnosticCard: some View {
+        Card(title: "진단 정보 보내기") {
+            Button {
+                UIPasteboard.general.string = cap.diagnosticText()
+                copied = true
+            } label: {
+                HStack {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    Text(copied ? "복사됐습니다 — 채팅에 붙여주세요" : "전체 진단 복사")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                .background(copied ? Color.green.opacity(0.8) : Color.blue.opacity(0.85),
+                            in: RoundedRectangle(cornerRadius: 10))
+                .foregroundStyle(.white)
+            }
+
+            Text("""
+                 빌드·클럭동기·카메라 실제 적용값·프레임 통계·검증 결과가 한 번에 \
+                 복사됩니다. 개발자가 실기기를 볼 수 없으므로 이 정보가 유일한 눈입니다.
+                 """)
+                .font(.caption2).foregroundStyle(.secondary).padding(.top, 6)
+
+            ScrollView(.horizontal, showsIndicators: true) {
+                Text(cap.diagnosticText())
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 220)
+            .padding(.top, 8)
         }
     }
 

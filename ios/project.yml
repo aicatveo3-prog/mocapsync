@@ -71,6 +71,19 @@ targets:
         GitCommit: "$(GIT_COMMIT)"
         UILaunchScreen: {}
         UIRequiresFullScreen: true
+        # ★ USB 로 영상·사이드카를 PC 로 꺼낼 수 있게 합니다.
+        #
+        #   Windows 의 Apple Devices 앱 → 아이폰 → 파일 → MocapSync 에
+        #   Documents/ 가 그대로 보입니다. 거기 sessions/<세션ID>/ 안에
+        #   .mov 와 .json 이 있습니다.
+        #
+        #   왜 필요한가: 4단계(WiFi 자동 업로드)가 아직 없습니다. 그런데 3단계의
+        #   목적은 "Pose2Sim 에 넣을 수 있는 영상 + 타임스탬프"를 만드는 것이라
+        #   PC 로 옮길 방법이 없으면 3단계를 검증할 수 없습니다.
+        #   또한 4단계가 생긴 뒤에도 큰 영상은 USB 가 WiFi 보다 빠르므로
+        #   대안으로 남겨 둘 값입니다.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         UIStatusBarStyle: UIStatusBarStyleLightContent
         UIViewControllerBasedStatusBarAppearance: false
         UISupportedInterfaceOrientations:
