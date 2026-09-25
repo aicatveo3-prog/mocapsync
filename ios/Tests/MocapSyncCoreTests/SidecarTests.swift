@@ -174,7 +174,9 @@ final class SidecarTests: XCTestCase {
     /// 여기서 "생략된다"는 사실 자체를 못박아 두면, PC 쪽 선택 키 목록과
     /// 어긋나는 순간 드러납니다.
     func testNilOptionalsAreOmittedFromJSON() throws {
-        var s = makeValid(frameCount: 3)
+        // ★ 프레임을 충분히 둬야 합니다. 3개면 0.03초라 too_short 경고가 붙어
+        //   "경고 없이 통과"를 확인할 수 없습니다.
+        var s = makeValid(frameCount: 600)
         s.requestedStartAtMasterNs = nil
         s.requestedStartAtSlaveNs = nil
         let j = try JSONSerialization.jsonObject(with: try s.encoded()) as! [String: Any]
