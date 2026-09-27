@@ -65,6 +65,36 @@ class T:
     UPLOAD_BEGIN = "upload_begin"
     UPLOAD_READY = "upload_ready"
     UPLOAD_DONE = "upload_done"
+    # ── 원격 촬영 ───────────────────────────────────────────────────────────
+    #
+    # ★ 왜 필요한가
+    # 3단계까지는 동기 측정이 끝나면 연결을 끊고, 녹화는 폰마다 따로 눌렀습니다.
+    # 그러면 여러 대를 같은 순간에 시작할 방법이 없습니다.
+    # 원격 모드에서는 폰이 연결을 유지한 채 대기하고, 마스터가 시작/정지를 지시합니다.
+    #
+    # 흐름
+    #   폰  hello -> (시각 왕복) -> time_result -> status(remote_ready)
+    #   마스터  30초마다 sync_request  -> 폰이 다시 재고 time_result
+    #   마스터  schedule_start          -> 폰 start_ack / start_nack
+    #   마스터  stop                    -> 폰 파일 업로드 -> record_done
+    SYNC_REQUEST = "sync_request"
+    RECORD_DONE = "record_done"
+    # PC 안에서만 쓰는 조작 명령 (ctl.py -> master). 루프백에서만 받습니다.
+    CTL = "ctl"
+    CTL_RESULT = "ctl_result"
+
+
+class RemoteState:
+    """
+    원격 모드 폰이 status 로 알리는 상태.
+    ios/Sources/MocapSyncCore/WireProtocol.swift 의 Wire.RemoteState 와 같아야 합니다.
+    """
+    READY = "remote_ready"
+    RECORDING = "recording"
+    STOPPING = "stopping"
+    UPLOADING = "uploading"
+
+    ALL = frozenset({READY, RECORDING, STOPPING, UPLOADING})
 
 
 # ── 인코딩 / 디코딩 ───────────────────────────────────────────────────────────
@@ -222,3 +252,31 @@ def status(state: str, *, battery: float | None = None,
 
 def error(code: str, message: str) -> dict:
     return {"type": T.ERROR, "code": code, "message": message}
+
+
+def sync_request(reason: str = "") -> dict:
+    """마스터가 폰에게 클럭 동기를 다시 재라고 요청합니다."""
+    return {"type": T.SYNC_REQUEST, "reason": reason}
+
+
+def record_done(session_id: str, files: list[str], frames: int,
+                usable: bool, fatal: list[str]) -> dict:
+    """
+    폰이 녹화를 끝내고 파일을 다 올렸다는 알림.
+
+    ios 쪽 RecordDoneMsg 와 키가 같아야 합니다.
+    usable / fatal 은 폰이 자체검증한 결과입니다. 마스터는 받은 사이드카를
+    Python 검증기로 다시 판정하므로 두 판정을 대조할 수 있습니다.
+    """
+    return {"type": T.RECORD_DONE, "sessionId": session_id, "files": list(files),
+            "frames": int(frames), "usable": bool(usable), "fatal": list(fatal)}
+
+
+def ctl(cmd: str, **kw) -> dict:
+    m = {"type": T.CTL, "cmd": cmd}
+    m.update(kw)
+    return m
+
+
+def ctl_result(ok: bool, message: str, session_id: str | None = None) -> dict:
+    return {"type": T.CTL_RESULT, "ok": ok, "message": message, "sessionId": session_id}

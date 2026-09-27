@@ -274,6 +274,67 @@ final class CaptureCoordinator: ObservableObject {
         recorder.finish()
     }
 
+    // MARK: - 원격 촬영용
+
+    /// 원격 명령(schedule_start)을 받아들일 수 있는지 확인하고 예약합니다.
+    ///
+    /// ★ 거부 조건을 마스터에게 **이유와 함께** 돌려줍니다.
+    ///   두 대 중 한 대만 안 찍히면 원인을 찾기 어렵습니다. nack 사유가 마스터
+    ///   콘솔에 찍히면 "어느 폰이 왜" 가 바로 보입니다.
+    func remoteSchedule(sessionId: String, startAtMasterNs: Int64) -> ScheduleCheck {
+        guard phase == .ready || phase == .done else {
+            return ScheduleCheck(ok: false, startAtSlaveNs: 0, leadNs: 0,
+                                 reason: "camera_not_ready: 카메라가 준비 상태가 아닙니다 (\(phase))")
+        }
+        let fresh = syncFreshness
+        guard fresh.canRecord else {
+            return ScheduleCheck(ok: false, startAtSlaveNs: 0, leadNs: 0,
+                                 reason: "sync_stale: \(fresh.summary)")
+        }
+        return recordScheduled(sessionId: sessionId, startAtMasterNs: startAtMasterNs)
+    }
+
+    var isRecordingOrArmed: Bool {
+        switch phase {
+        case .recording, .armed: return true
+        default: return false
+        }
+    }
+
+    private var finishWaiter: CheckedContinuation<(movie: URL, sidecar: URL)?, Never>?
+
+    /// 녹화를 멈추고 파일이 다 써질 때까지 기다립니다.
+    ///
+    /// Recorder 는 파일 마무리를 비동기로 하고 콜백으로 알려줍니다. 원격 모드는
+    /// 그 뒤에 업로드해야 하므로, 콜백을 await 로 바꿔 줍니다.
+    ///
+    /// 녹화 중이 아니면 즉시 nil 을 돌려줍니다 (Recorder.finish 가 아무 일도 안 하므로
+    /// 기다리면 영원히 안 끝납니다). 혹시 콜백이 안 오면 30초 뒤 nil 로 풉니다.
+    func stopRecordingAndWait() async -> (movie: URL, sidecar: URL)? {
+        guard isRecordingOrArmed, finishWaiter == nil else { return nil }
+        finishToken += 1
+        let token = finishToken
+        return await withCheckedContinuation { c in
+            finishWaiter = c
+            stopRecording()
+            // 안전장치. 토큰으로 "이번 대기"만 풉니다 — 다음 녹화의 대기를
+            // 이전 타이머가 잘못 푸는 일을 막습니다.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                guard let self, self.finishToken == token else { return }
+                self.resumeFinishWaiter(nil)
+            }
+        }
+    }
+
+    private var finishToken = 0
+
+    private func resumeFinishWaiter(_ v: (movie: URL, sidecar: URL)?) {
+        guard let w = finishWaiter else { return }
+        finishWaiter = nil
+        w.resume(returning: v)
+    }
+
     // MARK: - 세션 목록
 
     static func newSessionId() -> String {
@@ -436,6 +497,7 @@ extension CaptureCoordinator: RecorderDelegate {
         lastSidecar = sidecar
         phase = .done
         refreshSessions()
+        resumeFinishWaiter((movie: movie, sidecar: sidecar))
         let attrs = try? FileManager.default.attributesOfItem(atPath: movie.path)
         let bytes = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         AppLog.shared.i("Cap", String(
@@ -448,5 +510,6 @@ extension CaptureCoordinator: RecorderDelegate {
     func recorderDidFail(_ r: Recorder, error: Error) {
         phase = .failed(error.localizedDescription)
         AppLog.shared.e("Cap", "녹화 실패: \(error.localizedDescription)")
+        resumeFinishWaiter(nil)
     }
 }

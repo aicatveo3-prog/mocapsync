@@ -78,15 +78,38 @@ final class Uploader: ObservableObject {
     func upload(sessionId: String, files: [URL],
                 host: String, port: UInt16) {
         guard !phase.isBusy else { return }
-        let ordered = files.sorted { a, b in
+        log = []
+        let ordered = Uploader.sidecarFirst(files)
+        Task { await session(sessionId: sessionId, files: ordered,
+                             host: host, port: port) }
+    }
+
+    /// 업로드를 **끝까지 기다리는** 버전. 원격 촬영(RemoteLink)이 씁니다.
+    ///
+    /// 정지 명령을 받은 폰은 파일을 다 올린 **뒤에** 마스터에게 record_done 을
+    /// 보내야 합니다. 그래야 마스터가 두 폰의 사이드카를 모아 세션 검사를 합니다.
+    /// 그래서 완료 시점을 알 수 있어야 합니다.
+    ///
+    /// 실기기에서 이미 검증된 업로드 경로를 그대로 재사용합니다 (새로 짜지 않음).
+    /// 별도 TCP 연결을 쓰므로 대용량 전송이 제어 연결의 음성 등급을 쓰지 않습니다.
+    func uploadAndWait(sessionId: String, files: [URL],
+                       host: String, port: UInt16) async -> Bool {
+        guard !phase.isBusy else { return false }
+        log = []
+        await session(sessionId: sessionId, files: Uploader.sidecarFirst(files),
+                      host: host, port: port)
+        if case .finished = phase { return true }
+        return false
+    }
+
+    /// 사이드카(.json)를 영상보다 먼저.
+    static func sidecarFirst(_ files: [URL]) -> [URL] {
+        files.sorted { a, b in
             let aj = a.pathExtension.lowercased() == "json"
             let bj = b.pathExtension.lowercased() == "json"
             if aj != bj { return aj }
             return a.lastPathComponent < b.lastPathComponent
         }
-        log = []
-        Task { await session(sessionId: sessionId, files: ordered,
-                             host: host, port: port) }
     }
 
     private func append(_ s: String) {

@@ -17,6 +17,7 @@ struct RecordView: View {
     @State private var selectedSession: String?
     @State private var copied = false
     @StateObject private var uploader = Uploader(deviceId: CaptureCoordinator.stableDeviceId())
+    @StateObject private var remote = RemoteLink(deviceId: CaptureCoordinator.stableDeviceId())
     /// 마지막으로 쓴 주소를 기억합니다. 매번 입력하게 하면 루프가 느려집니다.
     @AppStorage("mocapsync.uploadHost") private var uploadHost = ""
     @AppStorage("mocapsync.uploadPort") private var uploadPort = "9001"
@@ -27,6 +28,7 @@ struct RecordView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 previewCard
+                remoteCard
                 syncCard
                 statusCard
                 controlCard
@@ -47,13 +49,104 @@ struct RecordView: View {
                 await cap.start()
             }
         }
-        .onDisappear { cap.stopSession() }
+        .onDisappear {
+            remote.stop()
+            cap.stopSession()
+        }
         .onReceive(NotificationCenter.default.publisher(
             for: UIDevice.orientationDidChangeNotification)) { _ in
                 isLandscape = CameraController.isLandscapeNow()
             }
         .sheet(isPresented: $showShare) {
             if !shareItems.isEmpty { ShareSheet(items: shareItems) }
+        }
+    }
+
+    // MARK: - PC 원격 촬영 ★ 여러 대 동시 촬영
+
+    /// 폰 여러 대를 PC 에서 한꺼번에 시작·정지합니다.
+    ///
+    /// 켜 두면 이 폰은 PC 마스터에 연결된 채 기다립니다. 클럭 동기는 자동으로
+    /// 30초마다 다시 잽니다. PC 에서 시작을 누르면 모든 폰이 같은 순간부터
+    /// 기록하고, 정지를 누르면 파일을 PC 로 올립니다.
+    private var remoteCard: some View {
+        let on = remote.phase.isConnected
+        let color: Color = {
+            switch remote.phase {
+            case .ready: return .green
+            case .recording: return .red
+            case .failed: return .orange
+            default: return .blue
+            }
+        }()
+
+        return Card(title: "PC 원격 촬영 (여러 대 동시)") {
+            HStack(spacing: 8) {
+                Circle().fill(on ? color : .gray).frame(width: 10, height: 10)
+                Text(remote.phase.label).font(.subheadline.bold())
+                    .foregroundStyle(on ? color : .secondary)
+            }
+
+            if let u = remote.lastUncertaintyMs {
+                KV("마지막 동기", String(format: "오차 상한 %.3f ms", u)
+                   + (remote.lastSyncAt.map { "  (\(Int(-$0.timeIntervalSinceNow))초 전)" } ?? ""))
+            }
+            if remote.sessionsCompleted > 0 {
+                KV("완료한 촬영", "\(remote.sessionsCompleted)회")
+            }
+
+            HStack(spacing: 8) {
+                TextField("PC 주소 (예: 172.30.1.28)", text: $uploadHost)
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numbersAndPunctuation)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .disabled(on)
+                TextField("9001", text: $uploadPort)
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numberPad)
+                    .frame(width: 80)
+                    .disabled(on)
+            }
+            .padding(.top, 4)
+
+            Button {
+                if on {
+                    remote.stop()
+                } else {
+                    remote.start(host: uploadHost,
+                                 port: UInt16(uploadPort) ?? Wire.defaultPort,
+                                 capture: cap)
+                }
+            } label: {
+                Text(on ? "원격 대기 끄기" : "PC 원격 대기 켜기")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity).padding(.vertical, 12)
+                    .background(on ? Color.white.opacity(0.18) : Color.blue.opacity(0.85),
+                                in: RoundedRectangle(cornerRadius: 10))
+                    .foregroundStyle(.white)
+            }
+            .disabled(!on && (uploadHost.isEmpty || !(cap.phase == .ready || cap.phase == .done)))
+            .padding(.top, 4)
+
+            if !on && !(cap.phase == .ready || cap.phase == .done) {
+                Text("카메라 준비가 끝나면 켤 수 있습니다.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
+            if !remote.events.isEmpty {
+                Text(remote.events.suffix(5).joined(separator: "\n"))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
+
+            Text("""
+                 켜 두면 PC 에서 시작/정지를 누릅니다. 이 폰의 버튼은 누르지 마세요.
+                 폰을 가로로 눕혀 고정하고, 화면을 켜 둔 채로 두세요. \
+                 클럭 동기는 30초마다 자동으로 다시 잽니다.
+                 """)
+                .font(.caption2).foregroundStyle(.secondary).padding(.top, 4)
         }
     }
 
@@ -257,7 +350,9 @@ struct RecordView: View {
 
     private var controlCard: some View {
         Card(title: "촬영") {
-            let canRecord = cap.phase == .ready || cap.phase == .done
+            // 원격 대기 중에는 PC 가 조작합니다. 여기서 누르면 PC 의 시작 명령과 겹칩니다.
+            let canRecord = (cap.phase == .ready || cap.phase == .done)
+                && !remote.phase.isConnected
 
             Button {
                 cap.recordNow()

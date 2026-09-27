@@ -113,6 +113,46 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(d.size, 30_517)
     }
 
+    // MARK: - 원격 촬영
+
+    /// server/mocapsync/protocol.py 의 record_done 과 키가 같아야 합니다.
+    /// 키가 어긋나면 마스터가 정지 명령 뒤 끝없이 기다립니다.
+    func testRecordDoneKeys() throws {
+        let d = try WireCodec.encodeLine(RecordDoneMsg(
+            sessionId: "S20260927-180716", files: ["A.json", "A.mov"],
+            frames: 387, usable: true, fatal: []))
+        let j = try json(d)
+        XCTAssertEqual(j["type"] as? String, "record_done")
+        XCTAssertEqual(j["sessionId"] as? String, "S20260927-180716")
+        XCTAssertEqual(j["frames"] as? Int, 387)
+        XCTAssertEqual(j["usable"] as? Bool, true)
+        XCTAssertEqual(Set(j.keys), ["type", "sessionId", "files", "frames", "usable", "fatal"])
+    }
+
+    /// 마스터(Python)가 보내는 그대로의 줄을 해석할 수 있어야 합니다.
+    func testRemoteCommandsDecode() throws {
+        let stop = Data(#"{"type":"stop","sessionId":"S1"}"#.utf8)
+        XCTAssertEqual(try WireCodec.typeOf(stop), Wire.MsgType.stop.rawValue)
+        XCTAssertEqual(try WireCodec.decode(StopMsg.self, from: stop).sessionId, "S1")
+
+        let sr = Data(#"{"type":"sync_request","reason":"주기 재측정"}"#.utf8)
+        XCTAssertEqual(try WireCodec.typeOf(sr), Wire.MsgType.syncRequest.rawValue)
+        XCTAssertEqual(try WireCodec.decode(SyncRequestMsg.self, from: sr).reason, "주기 재측정")
+
+        let ss = Data(#"{"type":"schedule_start","sessionId":"S1","startAtMasterNs":123456789,"targetFps":60,"width":1920,"height":1080,"lockAe":true,"lockAwb":true,"lockFocus":true,"stabilization":"off","maxExposureNs":2000000}"#.utf8)
+        let m = try WireCodec.decode(ScheduleStartMsg.self, from: ss)
+        XCTAssertEqual(m.startAtMasterNs, 123_456_789)
+    }
+
+    /// 마스터는 이 문자열로 명령 대상 카메라를 고릅니다. 한 글자만 달라도
+    /// 폰이 "원격 대기"로 인식되지 않아 시작 명령을 못 받습니다.
+    func testRemoteStateStringsMatchPython() {
+        XCTAssertEqual(Wire.RemoteState.ready.rawValue, "remote_ready")
+        XCTAssertEqual(Wire.RemoteState.recording.rawValue, "recording")
+        XCTAssertEqual(Wire.RemoteState.stopping.rawValue, "stopping")
+        XCTAssertEqual(Wire.RemoteState.uploading.rawValue, "uploading")
+    }
+
     func testTimeResultCarriesConfigString() throws {
         let est = SyncEstimate(
             offsetNs: 0, minRttNs: 1, uncertaintyNs: 0, spreadNs: 0,

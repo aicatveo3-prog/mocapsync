@@ -38,6 +38,23 @@ public enum Wire {
         case uploadBegin = "upload_begin"
         case uploadReady = "upload_ready"
         case uploadDone = "upload_done"
+        // ── 원격 촬영 ───────────────────────────────────────────────────────
+        //
+        // 3단계까지는 동기 측정이 끝나면 연결을 끊고 녹화는 폰마다 따로 눌렀습니다.
+        // 그러면 여러 대를 같은 순간에 시작할 수 없습니다. 원격 모드에서는 폰이
+        // 연결을 유지한 채 대기하고, 마스터가 동기 재측정/시작/정지를 지시합니다.
+        case syncRequest = "sync_request"
+        case recordDone = "record_done"
+    }
+
+    /// 원격 모드 폰이 status 로 알리는 상태.
+    /// server/mocapsync/protocol.py 의 RemoteState 와 같아야 합니다.
+    /// 마스터는 이 값으로 "명령을 받을 수 있는 카메라"를 고릅니다.
+    public enum RemoteState: String, CaseIterable {
+        case ready = "remote_ready"
+        case recording
+        case stopping
+        case uploading
     }
 }
 
@@ -232,6 +249,38 @@ public struct ScheduleStartMsg: Decodable {
 public struct ErrorMsg: Decodable {
     public let code: String?
     public let message: String?
+}
+
+/// 마스터 -> 폰: 녹화 정지
+public struct StopMsg: Decodable {
+    public let sessionId: String
+}
+
+/// 마스터 -> 폰: 클럭 동기를 다시 재라
+public struct SyncRequestMsg: Decodable {
+    public let reason: String?
+}
+
+/// 폰 -> 마스터: 녹화를 끝내고 파일을 다 올렸다.
+///
+/// usable / fatal 은 폰의 자체검증 결과입니다. 마스터는 받은 사이드카를
+/// Python 검증기로 다시 판정하므로 두 판정을 대조할 수 있습니다.
+public struct RecordDoneMsg: Encodable {
+    public let type = Wire.MsgType.recordDone.rawValue
+    public let sessionId: String
+    public let files: [String]
+    public let frames: Int
+    public let usable: Bool
+    public let fatal: [String]
+
+    public init(sessionId: String, files: [String], frames: Int,
+                usable: Bool, fatal: [String]) {
+        self.sessionId = sessionId
+        self.files = files
+        self.frames = frames
+        self.usable = usable
+        self.fatal = fatal
+    }
 }
 
 public struct UploadReadyMsg: Decodable {

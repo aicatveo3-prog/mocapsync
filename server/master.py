@@ -94,9 +94,37 @@ class Slave:
         self.estimate: dict | None = None
         self.app_version: str = "?"
         self.state = "connected"
+        # ── 원격 촬영용 ──────────────────────────────────────────────────────
+        self.writer: asyncio.StreamWriter | None = None
+        self.is_ctl = False
+        #: 마지막 time_result 를 받은 마스터 시각. 동기가 얼마나 낡았는지 판단합니다.
+        self.last_sync_at_ns: int = 0
+        #: sync_request 를 보냈고 아직 결과가 안 온 상태
+        self.sync_pending = False
+        self.sync_event = asyncio.Event()
+        #: 세션별 start_ack/nack 대기
+        self.ack_futures: dict[str, asyncio.Future] = {}
+        #: 세션별 record_done 대기
+        self.done_futures: dict[str, asyncio.Future] = {}
 
     def label(self) -> str:
         return f"{self.name}({self.device_id[:8]}) {self.model} {self.platform} {self.os_version}"
+
+    @property
+    def is_remote(self) -> bool:
+        """원격 모드로 대기 중인 카메라인가 (녹화 화면에서 'PC 원격 대기'를 켠 폰)."""
+        return self.state in P.RemoteState.ALL
+
+    def sync_age_s(self) -> float:
+        if not self.last_sync_at_ns:
+            return float("inf")
+        return (P.now_ns() - self.last_sync_at_ns) / 1e9
+
+    async def send(self, msg: dict) -> None:
+        if self.writer is None:
+            raise ConnectionError("연결이 없습니다")
+        self.writer.write(P.encode(msg))
+        await self.writer.drain()
 
 
 class Master:
@@ -107,6 +135,8 @@ class Master:
         self.server_id = uuid.uuid4().hex[:12]
         self.slaves: dict[str, Slave] = {}
         self.session_seq = 0
+        self.current_session: str | None = None
+        self.session_cameras: list[Slave] = []
         # 업로드 받을 곳. 4단계 파이프라인이 여기를 입력으로 씁니다.
         self.upload_root = Path(__file__).resolve().parent.parent / "uploads"
         self.upload_root.mkdir(parents=True, exist_ok=True)
@@ -124,6 +154,7 @@ class Master:
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
         sl = Slave(peer)
+        sl.writer = writer
         self.slaves[peer] = sl
         log(f"[+] 접속 {peer}", fh=self.fh)
 
@@ -184,8 +215,38 @@ class Master:
                             self._auto_start(writer, sl, self.auto_start_after))
                     continue
 
+                if t == P.T.CTL:
+                    # ★ 조작 명령은 이 PC 안에서만 받습니다.
+                    #   같은 WiFi 의 아무 기기나 녹화를 시작·정지시키면 곤란하므로
+                    #   루프백(127.0.0.1) 에서 온 것만 처리합니다.
+                    sl.is_ctl = True
+                    host = peer_t[0] if peer_t else ""
+                    if host not in ("127.0.0.1", "::1"):
+                        log(f"[!] {peer} 에서 온 조작 명령 거부 (루프백만 허용)", fh=self.fh)
+                        await sl.send(P.ctl_result(False, "루프백에서만 조작할 수 있습니다"))
+                        continue
+                    ok, text, sid = await self.run_command(
+                        str(msg.get("cmd", "")), msg)
+                    await sl.send(P.ctl_result(ok, text, sid))
+                    continue
+
+                if t == P.T.RECORD_DONE:
+                    sid = str(msg.get("sessionId", ""))
+                    usable = bool(msg.get("usable"))
+                    log(f"    record_done[{sl.name}] {sid}  프레임 {msg.get('frames')}  "
+                        f"폰 자체검증 {'사용 가능' if usable else '★ 사용 불가'}", fh=self.fh)
+                    for f in msg.get("fatal") or []:
+                        log(f"      [치명] {f}", fh=self.fh)
+                    fut = sl.done_futures.get(sid)
+                    if fut and not fut.done():
+                        fut.set_result(msg)
+                    continue
+
                 if t == P.T.TIME_RESULT:
                     sl.estimate = msg
+                    sl.last_sync_at_ns = P.now_ns()
+                    sl.sync_pending = False
+                    sl.sync_event.set()
                     off = msg.get("offsetNs", 0) / cs.NS_PER_MS
                     rtt = msg.get("minRttNs", 0) / cs.NS_PER_MS
                     unc = msg.get("uncertaintyNs", 0) / cs.NS_PER_MS
@@ -235,6 +296,9 @@ class Master:
                     else:
                         log(f"    start_NACK[{sl.name}] {msg.get('reason')} "
                             f"여유 {lead:.1f} ms", fh=self.fh)
+                    fut = sl.ack_futures.get(str(msg.get("sessionId", "")))
+                    if fut and not fut.done():
+                        fut.set_result(msg)
                     continue
 
                 if t == P.T.ERROR:
@@ -249,6 +313,12 @@ class Master:
         finally:
             if auto_task:
                 auto_task.cancel()
+            # 이 폰을 기다리던 명령이 끝없이 기다리지 않게 풀어줍니다.
+            for fut in list(sl.ack_futures.values()) + list(sl.done_futures.values()):
+                if not fut.done():
+                    fut.set_result(None)
+            sl.sync_event.set()
+            sl.writer = None
             self.slaves.pop(peer, None)
             log(f"[-] 종료 {peer} (왕복 {sl.probe_count}회 응답)", fh=self.fh)
             with contextlib.suppress(Exception):
@@ -421,12 +491,237 @@ class Master:
         writer.write(P.encode(P.schedule_start(sid, start_at)))
         await writer.drain()
 
+    # ── 원격 촬영 ────────────────────────────────────────────────────────────
+    #
+    # ★ 왜 마스터가 주기적으로 동기를 다시 시키는가
+    #
+    # 두 폰의 수정발진자는 주파수가 미세하게 달라 오프셋이 시간에 따라 흐릅니다.
+    # 규격 최악 40 ppm 이면 50초에 2 ms 입니다 (DESIGN.md, ClockOffsetRecord).
+    # 폰을 세워두고 사람이 준비하는 동안 몇 분이 지나기 쉬우므로, 대기 중에는
+    # 마스터가 RESYNC_INTERVAL_S 마다 다시 재게 합니다. 그래서 "시작"을 누르는
+    # 순간 오프셋이 항상 30초 이내로 신선합니다.
+    #
+    # 폰이 스스로 타이머를 도는 대신 마스터가 시키는 이유: 폰 쪽을 "받은 명령에만
+    # 반응하는" 단순한 구조로 둘 수 있습니다. 개발자가 폰 코드를 실기기에서
+    # 돌려볼 수 없으므로, 폰 쪽 동시성은 적을수록 안전합니다.
+
+    RESYNC_INTERVAL_S = 30.0
+    #: 시작 직전 이보다 오래된 동기는 다시 잽니다.
+    MAX_SYNC_AGE_AT_START_S = 45.0
+    #: 예약 시작 여유. 폰은 최소 300 ms 를 요구합니다 (SyncConfig.minLeadNs).
+    #: 핫스팟에서 최대 RTT 278 ms 를 본 적이 있어 넉넉히 1초로 둡니다.
+    #: 카메라는 이미 돌고 있으므로 여유가 길어도 손해는 시작이 1초 늦는 것뿐입니다.
+    DEFAULT_LEAD_MS = 1000
+
+    def remote_cameras(self) -> list[Slave]:
+        return [s for s in self.slaves.values() if s.is_remote and not s.is_ctl]
+
+    async def resync_loop(self) -> None:
+        """대기 중인 원격 카메라에게 주기적으로 동기를 다시 시킵니다."""
+        while True:
+            await asyncio.sleep(5.0)
+            for sl in self.remote_cameras():
+                if sl.state != P.RemoteState.READY or sl.sync_pending:
+                    continue
+                if sl.sync_age_s() < self.RESYNC_INTERVAL_S:
+                    continue
+                await self._request_sync(sl, "주기 재측정")
+
+    async def _request_sync(self, sl: Slave, reason: str) -> None:
+        sl.sync_pending = True
+        sl.sync_event.clear()
+        try:
+            await sl.send(P.sync_request(reason))
+        except Exception as e:  # noqa: BLE001
+            sl.sync_pending = False
+            sl.sync_event.set()
+            log(f"    sync_request 실패[{sl.name}]: {e}", fh=self.fh)
+
+    def list_text(self) -> str:
+        cams = self.remote_cameras()
+        others = [s for s in self.slaves.values()
+                  if not s.is_remote and not s.is_ctl and s.device_id != "?"]
+        lines = [f"원격 카메라 {len(cams)}대"
+                 + (f"  (진행 중 세션 {self.current_session})" if self.current_session else "")]
+        for s in cams:
+            unc = (s.estimate or {}).get("uncertaintyNs", 0) / cs.NS_PER_MS
+            age = s.sync_age_s()
+            lines.append(
+                f"  - {s.name} [{s.device_id[:8]}] {s.state:<13} "
+                f"동기 {'측정 중' if s.sync_pending else f'{age:5.0f}초 전'}  "
+                f"상한 {unc:.3f} ms  앱 {s.app_version}")
+        if others:
+            lines.append(f"원격 대기가 아닌 연결 {len(others)}개 (동기 화면/업로드 등)")
+        if not cams:
+            lines.append("  폰의 녹화 화면에서 'PC 원격 대기'를 켜세요.")
+        return "\n".join(lines)
+
+    async def run_command(self, cmd: str, msg: dict | None = None) -> tuple[bool, str, str | None]:
+        msg = msg or {}
+        if cmd == "start":
+            return await self.start_recording(int(msg.get("leadMs", self.DEFAULT_LEAD_MS)))
+        if cmd == "stop":
+            return await self.stop_recording(float(msg.get("timeoutS", 900)))
+        if cmd == "list":
+            return True, self.list_text(), self.current_session
+        return False, f"모르는 명령: {cmd!r} (start / stop / list)", None
+
+    async def start_recording(self, lead_ms: int) -> tuple[bool, str, str | None]:
+        """
+        모든 원격 카메라에게 같은 순간부터 녹화하라고 지시합니다.
+
+        순서
+          1) 동기가 오래됐거나 측정 중인 폰은 새 결과를 기다립니다
+          2) 공통 시각(마스터 시계) = 지금 + lead 를 정해 모두에게 보냅니다
+          3) 각 폰의 ack/nack 을 모읍니다
+        폰은 그 시각을 자기 시계로 바꿔서, 그 시각 이후의 첫 프레임부터 기록합니다.
+        """
+        if self.current_session:
+            return False, f"이미 녹화 중입니다: {self.current_session}", self.current_session
+        cams = [s for s in self.remote_cameras() if s.state == P.RemoteState.READY]
+        if not cams:
+            return False, "대기 중인 원격 카메라가 없습니다.\n" + self.list_text(), None
+
+        # 1) 동기 신선도
+        stale = [s for s in cams if s.sync_pending or s.sync_age_s() > self.MAX_SYNC_AGE_AT_START_S]
+        for s in stale:
+            if not s.sync_pending:
+                await self._request_sync(s, "시작 직전 재측정")
+        if stale:
+            log(f"    시작 전 동기 재측정 대기: {', '.join(s.name for s in stale)}", fh=self.fh)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(s.sync_event.wait() for s in stale)), timeout=30)
+            except asyncio.TimeoutError:
+                return False, "동기 재측정이 30초 안에 끝나지 않았습니다.", None
+            cams = [s for s in self.remote_cameras() if s.state == P.RemoteState.READY]
+
+        # 2) 예약
+        sid = f"S{datetime.now():%Y%m%d-%H%M%S}"
+        start_at = P.now_ns() + lead_ms * cs.NS_PER_MS
+        loop = asyncio.get_running_loop()
+        for s in cams:
+            s.ack_futures[sid] = loop.create_future()
+            s.done_futures[sid] = loop.create_future()
+        self.current_session = sid
+        self.session_cameras = list(cams)
+        log("", fh=self.fh)
+        log(f"▶ 녹화 시작 지시 {sid}  카메라 {len(cams)}대  여유 {lead_ms} ms", fh=self.fh)
+        for s in cams:
+            await s.send(P.schedule_start(sid, start_at))
+
+        # 3) 응답 모으기
+        results = []
+        for s in cams:
+            try:
+                r = await asyncio.wait_for(s.ack_futures[sid], timeout=lead_ms / 1000 + 5)
+            except asyncio.TimeoutError:
+                r = None
+            results.append((s, r))
+
+        acked = [s for s, r in results if r and r.get("type") == P.T.START_ACK]
+        failed = [(s, r) for s, r in results if not (r and r.get("type") == P.T.START_ACK)]
+        lines = [f"{sid}: {len(acked)}/{len(cams)}대 시작"]
+        for s, r in failed:
+            why = (r or {}).get("reason", "응답 없음")
+            lines.append(f"  ★ {s.name}: {why}")
+        if not acked:
+            self.current_session = None
+            self.session_cameras = []
+            return False, "\n".join(lines), sid
+        self.session_cameras = acked
+        log("  " + "\n  ".join(lines), fh=self.fh)
+        return True, "\n".join(lines), sid
+
+    async def stop_recording(self, timeout_s: float) -> tuple[bool, str, str | None]:
+        """모든 카메라를 멈추고, 파일이 다 올라오면 세션 단위로 검사합니다."""
+        sid = self.current_session
+        if not sid:
+            return False, "진행 중인 녹화가 없습니다.", None
+        cams = list(self.session_cameras)
+        log("", fh=self.fh)
+        log(f"■ 녹화 정지 지시 {sid}  카메라 {len(cams)}대", fh=self.fh)
+        for s in cams:
+            with contextlib.suppress(Exception):
+                await s.send(P.stop(sid))
+
+        done = []
+        for s in cams:
+            fut = s.done_futures.get(sid)
+            try:
+                r = await asyncio.wait_for(fut, timeout=timeout_s) if fut else None
+            except asyncio.TimeoutError:
+                r = None
+            done.append((s, r))
+
+        self.current_session = None
+        self.session_cameras = []
+        report = self._session_report(sid)
+        missing = [s.name for s, r in done if r is None]
+        head = f"{sid}: {len(done) - len(missing)}/{len(cams)}대 업로드 완료"
+        if missing:
+            head += f"  (★ 못 받음: {', '.join(missing)})"
+        return not missing, head + "\n" + report, sid
+
+    def _session_report(self, sid: str) -> str:
+        """
+        ★ 세션 단위 검사.
+
+        사이드카 하나하나는 업로드될 때 이미 검증했습니다. 여기서는 여러 대를
+        **같이** 놓았을 때만 드러나는 문제를 봅니다 — 공통 시간축에서 겹치는
+        구간이 있는지, deviceId 가 겹치지 않는지, 두 카메라의 시작 시각이
+        얼마나 맞았는지.
+        """
+        d = self.upload_root / sid
+        files = sorted(d.glob("*.json"))
+        if not files:
+            return "  (사이드카가 없습니다)"
+        cams = []
+        for f in files:
+            try:
+                cams.append(sidecar.Sidecar.load(f))
+            except Exception as e:  # noqa: BLE001
+                log(f"    ★ {f.name} 읽기 실패: {e}", fh=self.fh)
+
+        lines = []
+        log("", fh=self.fh)
+        log(f"    ┌─ 세션 검사: {sid}  ({len(cams)}대)", fh=self.fh)
+        # 첫 프레임 시각을 공통 시간축(마스터 시계)으로 옮겨 비교합니다.
+        firsts = []
+        for c in cams:
+            t = c.timestamps_master_ns
+            if t:
+                firsts.append((c, t[0], t[-1]))
+                line = (f"{c.device_id[:8]}  {c.frame_count}프레임  "
+                        f"첫 프레임 {t[0] / 1e9:.6f}s (공통시각)  "
+                        f"상한 {c.clock_uncertainty_ns / cs.NS_PER_MS:.3f} ms  "
+                        f"{'사용 가능' if c.is_usable else '★ 사용 불가'}")
+                lines.append("  " + line)
+                log(f"    │  {line}", fh=self.fh)
+        if len(firsts) >= 2:
+            t0s = [f[1] for f in firsts]
+            spread_ms = (max(t0s) - min(t0s)) / cs.NS_PER_MS
+            line = (f"첫 프레임 시각 차이 {spread_ms:.3f} ms "
+                    f"(60fps 한 프레임 16.667 ms. 이 안이면 예약 시작이 같은 프레임을 잡은 것)")
+            lines.append("  " + line)
+            log(f"    │  {line}", fh=self.fh)
+        for i in sidecar.check_session(cams):
+            lines.append(f"  {i}")
+            log(f"    │  {i}", fh=self.fh)
+        log(f"    └─ 저장 위치: {d}", fh=self.fh)
+        log("", fh=self.fh)
+        return "\n".join(lines)
+
     async def run(self) -> None:
         server = await asyncio.start_server(self.handle, "0.0.0.0", self.port)
         addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
         log(f"TCP 대기: {addrs}", fh=self.fh)
-        async with server:
-            await server.serve_forever()
+        resync = asyncio.create_task(self.resync_loop())
+        try:
+            async with server:
+                await server.serve_forever()
+        finally:
+            resync.cancel()
 
 
 async def advertise_mdns(port: int, server_id: str):
@@ -522,6 +817,54 @@ async def watch_ip_changes(aiozc, info, port: int, fh, interval_s: float = 5.0):
         log("", fh=fh)
 
 
+CONSOLE_HELP = """\
+── 원격 촬영 조작 ──────────────────────────────
+  s + Enter   녹화 시작 (대기 중인 모든 카메라)
+  x + Enter   녹화 정지 (파일을 받아 세션 검사까지)
+  l + Enter   카메라 목록
+  h + Enter   이 도움말
+───────────────────────────────────────────────"""
+
+
+def start_console(m: "Master", loop: asyncio.AbstractEventLoop, fh) -> None:
+    """
+    콘솔 입력을 별도 스레드에서 읽습니다.
+
+    asyncio 는 Windows 에서 표준입력을 비동기로 읽지 못하므로 스레드로 받아
+    run_coroutine_threadsafe 로 이벤트 루프에 넘깁니다.
+    """
+    import threading
+
+    keys = {"s": "start", "x": "stop", "l": "list"}
+
+    def worker() -> None:
+        log(CONSOLE_HELP, fh=fh)
+        while True:
+            try:
+                line = input()
+            except (EOFError, KeyboardInterrupt):
+                return
+            k = line.strip().lower()
+            if not k:
+                continue
+            if k == "h":
+                log(CONSOLE_HELP, fh=fh)
+                continue
+            cmd = keys.get(k)
+            if not cmd:
+                log(f"모르는 키: {k!r}  (h 로 도움말)", fh=fh)
+                continue
+            fut = asyncio.run_coroutine_threadsafe(m.run_command(cmd), loop)
+            try:
+                ok, text, _ = fut.result()
+            except Exception as e:  # noqa: BLE001
+                log(f"★ 명령 실패: {e}", fh=fh)
+                continue
+            log(("" if ok else "★ ") + text, fh=fh)
+
+    threading.Thread(target=worker, daemon=True, name="console").start()
+
+
 async def main_async(args) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"master_{datetime.now():%Y%m%d-%H%M%S}.log"
@@ -556,6 +899,14 @@ async def main_async(args) -> int:
 
     # IP 변경 감시. 장소를 옮기거나 WiFi 를 바꿔도 광고가 따라갑니다.
     watcher = asyncio.create_task(watch_ip_changes(aiozc, info, args.port, fh))
+
+    # ★ 콘솔 키 입력으로 원격 촬영을 조작합니다.
+    #   터미널에서 직접 켰을 때만 동작합니다. 백그라운드로 돌리면 입력이 없으므로
+    #   그때는 `python server/ctl.py start` 로 조작합니다.
+    if sys.stdin is not None and sys.stdin.isatty():
+        start_console(m, asyncio.get_running_loop(), fh)
+    else:
+        log("콘솔 입력 없음 — 조작은  python server/ctl.py start | stop | list", fh=fh)
 
     try:
         await m.run()
