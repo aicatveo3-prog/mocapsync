@@ -417,6 +417,62 @@ Pose2Sim 의 `synchronization()` 은 카메라 간 움직임 상관으로 시간
 
 ---
 
+## 4.1 2D 자세 추정 실행 환경 — GPU (2026-09-27 실측)
+
+같은 영상(아이폰 11, 1086프레임, 1080p60, `mode='performance'`)으로 비교했습니다.
+
+| 환경 | 시간 | 배율 |
+| --- | --- | --- |
+| CPU (OpenVINO), 오버레이 영상 저장 | 6분 39초 | 1× |
+| GPU (ONNXRuntime CUDA), 오버레이 영상 저장 | **53초** | **7.5×** |
+| GPU, 오버레이 영상 없음 (`save_video='none'`) | **35초** | **11.4×** |
+
+오버레이 영상 인코딩이 GPU 실행 시간의 약 1/3(18초)을 차지합니다.
+대량 처리에서는 `save_video='none'` 으로 두고 확인용으로만 켭니다.
+
+카메라 4대 × 2분이면 CPU 약 3시간 → GPU 약 15분(영상 없이)입니다.
+
+### 정확도 — CPU 와 GPU 결과 비교 (`tools/pose_compare.py`)
+
+- 검출 일치: 749프레임 중 748프레임 양쪽 모두 검출 (1프레임만 CPU 단독)
+- 관절 위치 차이: **중앙값 0.022 px**, 95% 3.2 px
+- 프레임의 77% 는 사실상 동일(중앙값 0.1 px 미만)
+- 큰 차이(60~259 px)는 전부 **발가락**이고 신뢰도가 양쪽 모두 0.3 안팎으로 같았습니다.
+  신뢰도가 경계에 걸린 관절에서 두 연산 경로가 서로 다른 후보를 고른 것입니다.
+  어느 쪽이 맞다고 할 근거가 없으며, 저신뢰 관절은 Pose2Sim 의 필터와
+  삼각측량 이상치 제거가 걸러냅니다.
+
+→ 1080p 에서 1 px ≈ 2 mm 이고 데모 파이프라인 잡음이 약 20 mm(≈10 px)이므로
+**GPU 로 바꿔도 정확도 손실은 없습니다.**
+
+### 설치 조합 (재현용: `tools/setup_pose2sim_gpu.ps1`)
+
+| 패키지 | 버전 | 이유 |
+| --- | --- | --- |
+| onnxruntime-gpu | 1.22.0 | 1.30 은 CUDA 13 요구 — 드라이버 566.14 는 CUDA 12 까지 |
+| nvidia-cudnn-cu12 | 9.8.0.87 | 9.26 은 ORT 1.22 와 안 맞아 실행 중 CPU 로 조용히 후퇴 |
+| nvidia-cuda-runtime/cublas/cufft/curand-cu12 | 12.9 계열 | pip 로 받아 시스템 CUDA 설치 없이 동작 |
+
+드라이버를 올리지 않고 pip 패키지만으로 해결했습니다. 시스템 변경 0.
+
+### ★ 함정 4가지
+
+1. **`get_available_providers()` 에 CUDA 가 보여도 GPU 로 돈다는 보장이 없습니다.**
+   DLL 누락, cuDNN 불일치 모두 경고만 찍고 CPU 로 되돌아가 결과는 정상으로 나옵니다.
+   `tools/ort_gpu_check.py` 로 제공자를 하나만 지정해 실제 추론 속도를 재야 합니다.
+2. **Config.toml 에서 `device` 만 지정하면 무시됩니다.** Pose2Sim 이
+   "Backend is set to 'auto' but device is not" 를 찍고 자동 판정(→ CPU)으로 갑니다.
+   `backend = 'onnxruntime'` 과 `device = 'CUDA'` 를 **함께** 줘야 합니다.
+   자동 판정은 `torch.cuda.is_available()` 까지 요구하는데 torch 가 없으므로
+   자동으로는 절대 GPU 가 선택되지 않습니다.
+3. **Pose2Sim 을 부르기 전에 `onnxruntime.preload_dlls()`** 를 호출해야
+   pip 로 받은 CUDA DLL 을 찾습니다.
+4. (측정) **게임 등 다른 GPU 작업이 돌고 있으면 GPU 가 CPU 보다 느려질 수 있습니다.**
+   2026-09-25 게임 중 측정에서 7분 08초가 나와 CPU 보다 느렸습니다. 측정 전
+   `nvidia-smi` 로 유휴 상태를 확인합니다.
+
+---
+
 ## 5. 촬영 규칙 (정확도의 80%를 결정)
 
 - **60fps 이상 필수** (Pose2Sim 공식: 60Hz 미만은 정확도 하락)
