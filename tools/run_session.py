@@ -276,6 +276,8 @@ def main() -> int:
             res = R.resample_session(pairs, project / "pose-sync", fps=fps, method=a.method)
         except R.ResampleError as e:
             log(f"   ★ {e}")
+            if "사람이 한 프레임도" in str(e):
+                log("     영상에 사람이 찍히지 않았습니다. 사람 없이 찍은 연결 시험이면 정상입니다.")
             return finish(EXIT_INPUT, "리샘플 중단")
         rep = res.report()
         run["resample"] = rep
