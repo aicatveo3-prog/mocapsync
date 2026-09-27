@@ -503,7 +503,8 @@ final class RemoteLink: ObservableObject {
         conn = nil
     }
 
-    private static func err(_ m: String) -> NSError {
+    /// 네트워크 콜백(메인 스레드 밖)에서도 부르므로 actor 에 묶지 않습니다.
+    nonisolated private static func err(_ m: String) -> NSError {
         NSError(domain: "Remote", code: 1, userInfo: [NSLocalizedDescriptionKey: m])
     }
 }
