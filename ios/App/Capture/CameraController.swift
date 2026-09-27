@@ -41,7 +41,7 @@ final class CameraController: @unchecked Sendable {
         var errorDescription: String? {
             switch self {
             case .noDevice:
-                return "후면 광각 카메라를 찾을 수 없습니다."
+                return "후면 카메라(초광각·광각)를 찾을 수 없습니다."
             case .noFormat(let want):
                 return "필요한 포맷을 지원하지 않습니다: \(want)"
             case .cannotAddInput:
@@ -170,12 +170,24 @@ final class CameraController: @unchecked Sendable {
 
         // ── 1) 물리 카메라 고르기 ───────────────────────────────────────────
         //
-        // ★ 반드시 `builtInWideAngleCamera` 를 이름으로 지정합니다.
-        //   `.default(for: .video)` 는 기기에 따라 **합성 카메라**를 줄 수 있고,
-        //   합성 카메라는 촬영 중 렌즈를 바꿔 캘리브레이션을 파괴합니다.
-        //   (DESIGN.md §3.10 — 사용 금지 판정)
-        guard let dev = AVCaptureDevice.default(.builtInWideAngleCamera,
-                                                for: .video, position: .back) else {
+        // ★ 기본 = 후면 **초광각** (`builtInUltraWideCamera`, 기본 카메라 앱의 0.5x).
+        //   2026-09-27 사용자 결정. 근거 (DESIGN.md §3.10):
+        //     - 화각 107.8도 — 좁은 방에서도 전신이 들어옴 (광각 69.7도 첫 촬영에서 머리가 잘림)
+        //     - OIS 없음 — 끌 수 없는 렌즈 움직임이 원천적으로 없음
+        //     - 고정초점 — 초점거리가 물리적으로 안 변함 (캘리브레이션 초점 문제가 사라짐)
+        //   대가: 같은 거리에서 사람이 약 절반 크기, 렌즈가 어두움(f/2.4, 광각 f/1.8 대비
+        //   빛이 약 1.8배 필요), 가장자리 왜곡이 큼.
+        //
+        // ★ 반드시 물리 카메라를 **이름으로** 지정합니다.
+        //   기본 카메라 앱의 0.5x 는 합성 카메라(DualWide)가 렌즈를 바꿔 주는 것이고,
+        //   `.default(for: .video)` 도 합성 카메라를 줄 수 있습니다. 합성 카메라는
+        //   촬영 중 렌즈를 바꿔 캘리브레이션을 파괴합니다 (사용 금지 판정).
+        //
+        // 초광각이 없는 기기에서만 광각으로 물러납니다 (lockSettings 에서 경고).
+        guard let dev = AVCaptureDevice.default(.builtInUltraWideCamera,
+                                                for: .video, position: .back)
+                ?? AVCaptureDevice.default(.builtInWideAngleCamera,
+                                           for: .video, position: .back) else {
             throw CameraError.noDevice
         }
         device = dev
@@ -258,6 +270,7 @@ final class CameraController: @unchecked Sendable {
         }
 
         // 줌 1배 고정. 줌이 걸리면 초점거리가 달라집니다.
+        // (물리 초광각 카메라의 1배가 곧 기본 카메라 앱의 0.5x 입니다)
         dev.videoZoomFactor = 1.0
 
         // 저조도 보정은 프레임을 합성합니다. 끕니다.
@@ -333,6 +346,12 @@ final class CameraController: @unchecked Sendable {
         defer { dev.unlockForConfiguration() }
 
         applied.warnings = []
+
+        if !applied.deviceType.contains("UltraWide") {
+            applied.warnings.append(
+                "이 기기에서 초광각(0.5x)을 찾지 못해 광각(1x)으로 찍습니다. "
+                + "다른 폰과 렌즈가 다르면 캘리브레이션도 렌즈별로 따로 해야 합니다.")
+        }
 
         // ── 1) 노출 ─────────────────────────────────────────────────────────
         //

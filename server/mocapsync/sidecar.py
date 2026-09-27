@@ -690,6 +690,15 @@ def check_session(sidecars: Iterable[Sidecar]) -> list[Issue]:
             f"해상도가 다릅니다: {sorted(res)}. 캘리브레이션이 카메라별로 "
             "따로 되어 있으면 문제없습니다."))
 
+    # 렌즈가 섞였는지 (초광각 기본, 초광각이 없는 기기만 광각으로 물러남 — 2026-09-27).
+    # 섞여도 3D 는 되지만 캘리브레이션이 렌즈별로 맞아야 합니다.
+    lenses = {c.camera_device_type for c in cams if c.camera_device_type}
+    if len(lenses) > 1:
+        out.append(Issue(
+            "warning", "lens_mismatch",
+            f"카메라마다 렌즈가 다릅니다: {sorted(lenses)}. 캘리브레이션을 그 렌즈로 "
+            "했는지 확인하세요. 렌즈가 바뀌면 렌즈 특성 캘리브레이션을 다시 해야 합니다."))
+
     # ★ 공통 시간축에서 실제로 겹치는 구간이 있는지.
     #   없으면 삼각측량할 프레임이 한 장도 없습니다.
     spans = []

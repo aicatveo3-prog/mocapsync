@@ -622,3 +622,18 @@ def test_session_reports_worst_uncertainty():
     out = sc.check_session([a, b])
     msg = next(i.message for i in out if i.code == "worst_uncertainty")
     assert "3.000" in msg
+
+
+def test_session_mixed_lenses_warns():
+    """초광각이 기본(2026-09-27). 한 대만 광각으로 물러나면 캘리브레이션 확인이 필요합니다."""
+    a, b = two_cams()
+    a.camera_device_type = "AVCaptureDeviceTypeBuiltInUltraWideCamera"
+    b.camera_device_type = "AVCaptureDeviceTypeBuiltInWideAngleCamera"
+    out = sc.check_session([a, b])
+    assert any(i.code == "lens_mismatch" and i.severity == "warning" for i in out)
+
+
+def test_session_same_lens_does_not_warn():
+    a, b = two_cams()
+    a.camera_device_type = b.camera_device_type = "AVCaptureDeviceTypeBuiltInUltraWideCamera"
+    assert not any(i.code == "lens_mismatch" for i in sc.check_session([a, b]))

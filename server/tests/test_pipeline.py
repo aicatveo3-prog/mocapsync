@@ -330,6 +330,8 @@ def test_overrides_force_gpu_pair_and_headless():
     assert cfg["filtering"]["display_figures"] is False
     assert cfg["synchronization"]["synchronization_gui"] is False
     assert cfg["project"]["frame_rate"] == 60
+    # 초광각 기본 — 왜곡을 펴고 삼각측량
+    assert cfg["triangulation"]["undistort_points"] is True
 
 
 # ── 결과 읽기 ─────────────────────────────────────────────────────────────────

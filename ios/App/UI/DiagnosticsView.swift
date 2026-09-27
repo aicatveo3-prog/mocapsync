@@ -89,7 +89,9 @@ struct DiagnosticsView: View {
     // MARK: - 종합 판정
 
     private var verdictCard: some View {
-        let target = cams.first { $0.deviceTypeRaw.contains("WideAngle") && $0.position == "후면" }
+        // 녹화에 쓰는 카메라(후면 초광각)를 기준으로 판정합니다. 없으면 광각.
+        let target = cams.first { $0.isUltraWide && $0.position == "후면" }
+            ?? cams.first { $0.deviceTypeRaw.contains("WideAngle") && $0.position == "후면" }
             ?? cams.first { $0.position == "후면" }
             ?? cams.first
         let checks = target?.checks ?? []

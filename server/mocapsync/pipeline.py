@@ -434,6 +434,10 @@ def pose2sim_overrides(project: Path, fps: float, device: str, backend: str,
         },
         # synchronization 은 부르지 않지만, 혹시 불려도 창을 띄워 멈추지 않게 둡니다.
         "synchronization": {"synchronization_gui": False, "display_sync_plots": False},
+        # ★ 초광각(107.8도, 2026-09-27 기본 렌즈)은 가장자리 왜곡이 큽니다.
+        #   Pose2Sim 기본값(false)은 왜곡을 무시하고 삼각측량합니다. 2D 점을 캘리브레이션의
+        #   왜곡 계수로 펴서 계산하게 합니다 (personAssociation 도 같은 키를 읽음).
+        "triangulation": {"undistort_points": True},
         # 데모 Config 는 필터 그래프 창을 띄워 닫을 때까지 멈춥니다.
         "filtering": {"display_figures": False, "save_filt_plots": True},
     }
