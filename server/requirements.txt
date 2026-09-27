@@ -1,0 +1,9 @@
+# 저장소 테스트 환경 (.venv) 의 고정 버전.
+# numpy / scipy 는 Pose2Sim 환경(~/.venv/pose2sim)과 같은 버전입니다.
+# 리샘플러가 두 환경 모두에서 같은 결과를 내야 하기 때문입니다.
+#
+# 설치:  uv pip install --python .venv\Scripts\python.exe -r server\requirements.txt
+zeroconf==0.151.3
+pytest==9.1.1
+numpy==2.5.3
+scipy==1.18.1
