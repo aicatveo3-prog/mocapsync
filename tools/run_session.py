@@ -295,6 +295,8 @@ def main() -> int:
         if rig is None or len(cams) < 2:
             why = "캘리브레이션이 없습니다" if rig is None else "카메라가 1대입니다"
             log(f"   {why}. 3D 는 건너뜁니다.")
+            if rig is None:
+                log("   캘리브레이션은 tools\\calibrate.py 로 만듭니다 (docs/CALIBRATION.md).")
             log("   여기까지 결과: pose/ (2D), pose-sync/ (시각 맞춘 2D)")
             return finish(EXIT_PARTIAL, f"3D 전까지 완료 ({why})")
         steps = [("personAssociation", P2S.personAssociation),

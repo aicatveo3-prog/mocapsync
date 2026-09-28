@@ -1,9 +1,11 @@
 # 저장소 테스트 환경 (.venv) 의 고정 버전.
-# numpy / scipy 는 Pose2Sim 환경(~/.venv/pose2sim)과 같은 버전입니다.
-# 리샘플러가 두 환경 모두에서 같은 결과를 내야 하기 때문입니다.
+# numpy / scipy / OpenCV 는 Pose2Sim 환경(~/.venv/pose2sim_gpu)과 같은 버전입니다.
+# 리샘플러·캘리브레이션이 두 환경 모두에서 같은 결과를 내야 하기 때문입니다.
+# (Pose2Sim 환경은 opencv-python 5.0.0.93 — 여기는 창이 필요 없어 headless)
 #
 # 설치:  uv pip install --python .venv\Scripts\python.exe -r server\requirements.txt
 zeroconf==0.151.3
 pytest==9.1.1
 numpy==2.5.3
 scipy==1.18.1
+opencv-python-headless==5.0.0.93

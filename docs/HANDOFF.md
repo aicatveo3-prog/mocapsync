@@ -30,10 +30,10 @@
 | 4. 파이프라인 러너 `tools/run_session.py` | 완료, 데모로 3D 까지 검증 (DESIGN §4.3) |
 | PC 마스터 대시보드 (브라우저) | 완료, 가짜 폰으로 검증 (DESIGN §4.4). **실폰으로는 아직** |
 | 기본 렌즈 초광각 0.5x | 빌드 24/25 에 들어감. **실폰 설치 확인 전** |
-| **캘리브레이션** | **다음 할 일. 아직 없음** → 그래서 실폰 영상은 아직 3D 가 안 나옵니다 |
+| 캘리브레이션 도구 `tools/calibrate.py` | 완료 (2026-09-28), 가짜 카메라로 검증 (DESIGN §4.5). **실폰 판 촬영 전** → 리그가 아직 없어 실폰 영상은 아직 3D 가 안 나옵니다 |
 | 5. 3D 뷰어 | 아직 (대시보드에 붙일 예정, three.js) |
 
-테스트: Python 220개 통과 (`server/tests`). Swift 테스트는 CI(`iOS Core Tests`).
+테스트: Python 252개 통과 (`server/tests`). Swift 테스트는 CI(`iOS Core Tests`).
 
 ## 4. 사용자에게 걸려 있는 일
 
@@ -44,25 +44,33 @@
    - 무료 Apple ID → **설치 후 7일이면 앱이 안 열립니다.** 재설치하면 다시 7일.
    - 설치 직후 카메라가 "구성 중..."에서 멈춘 적 있음 → 앱을 완전히 닫고 다시 열면 됐음 (원인 미조사).
 2. 체커보드 인쇄: 바탕화면 `MocapSync_checkerboard_A4_7x10_23mm.pdf` (7×10칸, 23 mm, 안쪽 꼭짓점 6×9).
-   "실제 크기"로 인쇄, 100 mm 막대를 자로 확인, 딱딱한 판에 평평하게. **아직 찍지 말라고** 안내했음.
+   "실제 크기"로 인쇄, 100 mm 막대를 자로 확인, 딱딱한 판에 평평하게.
 3. 대시보드 실폰 시험: 바탕화면 "MocapSync 마스터" 아이콘 → 두 폰 "PC 원격 대기 켜기" → 녹화 시작/정지.
+4. **캘리브레이션 촬영** (빌드 25 설치 후 — 초광각으로 찍어야 함): `docs/CALIBRATION.md` 를 따라
+   ① 렌즈 특성(폰마다) → `calibrate.py intrinsics <세션>` ② 위치·방향 → `calibrate.py extrinsics <세션>`.
+   결과(오차, 높이·거리, check_camNN.jpg)를 받아 판정합니다.
 
-## 5. 다음 작업: 캘리브레이션 도구
+## 5. 캘리브레이션 도구 (완료, 실폰 검증 전)
 
-필요한 것 (사용자에게 약속한 내용):
-- **렌즈 특성(intrinsics)**: 폰마다 한 번. 체커보드를 손에 들고 여러 각도·화면 구석까지 천천히, **영상 모드로**
-  (사진 모드 금지 — 형식이 달라짐). 목표 오차 0.5 px 이하. 초광각은 고정초점이라 초점 문제는 없음.
-  왜곡이 크므로 러너는 이미 `triangulation.undistort_points = true`.
-- **위치·방향(extrinsics)**: 폰을 옮길 때마다. A4 판이 초광각에서 작게 찍혀 바닥 판 방식이 충분한지
-  **확인 필요**. 대안은 줄자로 잰 점 10개 이상(scene) 방식.
-- 결과를 **리그 폴더** `~/Pose2SimWork/rig/` 에 `Calib.toml`(Pose2Sim 형식, 카메라 순서 cam01, cam02…)
-  + `cameras.json` (`{"cam01": "<기기ID>", ...}`) 로 씁니다. 러너가 이걸 읽습니다.
-- ★ **cameras.json 은 도구가 자동으로 써야 합니다.** 폰 2대에서는 카메라가 뒤바뀌어도 재투영 오차·배제율에
-  전혀 안 나타납니다(실측: 뒤바꾼 3D 가 중앙값 54 cm 틀렸는데 지표는 정상). 사람이 손으로 쓰면 안 됩니다.
-- 사용자에게 줄 한국어 촬영 가이드 (몇 m, 몇 초, 어떻게 움직이는지).
-- 기기 ID: 폰 1 = `6DC32E3A1F59` (iOS 17.5.1), 폰 2 = `CFA431374C8C` (iOS 17.4.1).
+`tools/calibrate.py` → `server/mocapsync/calib_session.py` (파일·보고) → `server/mocapsync/calib.py` (계산).
+설계와 검증은 DESIGN §4.5, 촬영 가이드는 `docs/CALIBRATION.md`.
+
+- 렌즈 특성: `~/Pose2SimWork/intrinsics/<기기ID>.json` (렌즈·해상도·fps 가 다르면 외부 단계가 거부).
+- 위치·방향: 두 폰 **동시** 녹화에서 사이드카 시각으로 같은 순간을 짝지어 번들 조정. 바닥 판으로 Z 위.
+  → `~/Pose2SimWork/rig/` 에 `Calib.toml` + **`cameras.json`(deviceId 로 자동, 사람이 안 씀)** + `rig_report.json`
+  + `check_camNN.jpg`. 이전 리그는 `rig_backup/<시각>/`.
+- 판정이 나쁘면 저장하지 않음 (`--force` 로만). 종료 코드 0 저장 / 2 입력 문제 / 4 품질 부족.
+- 기기 ID 순서라 cam01 = `6DC32E3A1F59` (폰 1, iOS 17.5.1), cam02 = `CFA431374C8C` (폰 2, iOS 17.4.1).
+
+실폰에서 확인할 것 (가짜 카메라로는 알 수 없음):
+- **바닥 판이 초광각에서 잡히는가** (한 칸 약 10×6 px, 하한 근처). 못 찾으면 리그는 쓰되 경고.
+  안 되면: 바닥용 큰 판, 또는 앱이 중력 방향을 사이드카에 기록.
+- **초광각 실제 왜곡 크기** → 렌즈 특성 결과의 `pose2simUndistortErrorPx`. 1 px 넘으면 Pose2Sim 기본
+  왜곡 펴기(OpenCV 반복 5회)가 구석에서 덜 폄 → 러너에서 반복 횟수를 늘리는 패치 검토 (DESIGN §4.5).
+- 판정 기준값(내부 0.5 px, 외부 1.0 px, 축척 1%)이 현실에 맞는지.
 
 그 다음: 사람을 넣은 실촬영 → 첫 3D → 3D 뷰어(대시보드) → 품질 확인.
+대시보드에 "캘리브레이션" 버튼을 붙이는 것은 아직 안 함 (지금은 명령줄).
 보류 중인 사용자 결정: 뼈 길이 SD 5 mm 기준 완화 여부.
 
 ## 6. 코드 지도
@@ -79,13 +87,15 @@
 | `server/mocapsync/jobs.py`, `sessions_index.py` | 대시보드의 "3D 만들기", 촬영 목록 |
 | `server/slave_sim.py` | 가짜 폰 (폰 없이 시험) |
 | `tools/run_session.py` | 촬영 한 건 → 3D (종료 코드 0 완료 / 10 캘리브레이션 없음 / 2 입력 문제 / 3 단계 실패) |
+| `tools/calibrate.py`, `server/mocapsync/calib*.py` | 캘리브레이션 → 렌즈 특성 / 리그 (DESIGN §4.5) |
+| `server/tests/calib_synth.py` | 정답을 아는 가짜 카메라 (광선 추적으로 체커보드를 그림) |
 | `tools/make_demo_session.py` | 공식 데모를 폰 업로드처럼 꾸밈 (폰 없이 러너 시험) |
 | `uploads/<세션>/` | 폰이 올린 영상+사이드카 (git 제외) |
 | `~/Pose2SimWork/sessions/<세션>/` | 러너 작업 폴더 (ASCII 경로 필수) |
 
 ## 7. 환경과 명령
 
-- 리포 `.venv` (Python 3.13): 마스터·테스트. Pose2Sim 은 **없음**.
+- 리포 `.venv` (Python 3.13): 마스터·테스트. Pose2Sim 은 **없음**. OpenCV(headless 5.0.0.93)는 있음 (캘리브레이션 시험용).
 - `~/.venv/pose2sim_gpu`: Pose2Sim 0.10.49 + onnxruntime-gpu 1.22 (CUDA 12). 러너는 이걸로.
   재생성 `tools/setup_pose2sim_gpu.ps1`. GPU = RTX 4060 Laptop.
 - iOS 빌드: `ios/**` 를 main 에 푸시하면 GitHub Actions 가 서명 없는 IPA 를 만듦. 받기:
@@ -95,6 +105,7 @@
 ```powershell
 & .venv\Scripts\python.exe -m pytest server\tests -q -p no:cacheprovider
 & "$env:USERPROFILE\.venv\pose2sim_gpu\Scripts\python.exe" tools\run_session.py <세션>
+& "$env:USERPROFILE\.venv\pose2sim_gpu\Scripts\python.exe" tools\calibrate.py intrinsics|extrinsics <세션>   # 또는 status
 .\.venv\Scripts\python.exe server\master.py --no-browser      # 대시보드 http://127.0.0.1:8765
 .\.venv\Scripts\python.exe server\slave_sim.py --host 127.0.0.1 --remote --name camA --device-id CAMA00000001 --fake-offset-ms 37.5 --probes 120 --seed 1
 ```

@@ -183,7 +183,8 @@ def load_rig(rig_dir: Path | None) -> Rig | None:
     if not mp.is_file():
         raise PipelineError(
             f"{mp} 가 없습니다. 캘리브레이션의 cam01, cam02 가 각각 어느 폰인지 "
-            "알아야 합니다. 예: {\"cam01\": \"6DC32E3A1F59\", \"cam02\": \"...\"}")
+            "알아야 합니다. 손으로 쓰지 말고 tools/calibrate.py extrinsics 로 리그를 "
+            "다시 만드세요 (폰 2대에서는 뒤바뀌어도 품질 지표에 안 나타납니다).")
     device_of = {str(k): str(v) for k, v in json.loads(mp.read_text(encoding="utf-8")).items()}
     bad = [k for k in device_of if not CAM_NAME.match(k)]
     if bad:
