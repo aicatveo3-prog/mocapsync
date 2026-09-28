@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MocapSync 마스터</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="offline" class="banner" hidden role="alert">
+  마스터와 연결이 끊겼습니다. 마스터 창이 꺼졌는지 확인하세요. 다시 켜지면 저절로 이어집니다.
+</div>
+
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <div>
+      <h1>MocapSync 마스터</h1>
+      <p class="sub">아이폰 여러 대를 같은 순간에 찍고 3D 로 만듭니다</p>
+    </div>
+  </div>
+  <div class="addr" title="폰의 'PC 원격 촬영' 칸에 넣는 주소">
+    <span class="addr-label">폰에 넣을 주소</span>
+    <span id="addr" class="addr-value">…</span>
+  </div>
+  <button id="quit" class="btn ghost small" type="button">마스터 끄기</button>
+</header>
+
+<main>
+  <section class="panel control" aria-labelledby="ctl-title">
+    <div class="control-status">
+      <h2 id="ctl-title" class="visually-hidden">녹화 조작</h2>
+      <div id="phase-dot" class="dot" aria-hidden="true"></div>
+      <div>
+        <div id="phase-text" class="phase-text">준비 중</div>
+        <div id="phase-sub" class="phase-sub"></div>
+      </div>
+    </div>
+    <div class="control-buttons">
+      <button id="btn-start" class="btn big rec" type="button" disabled>
+        <span class="ico rec-ico" aria-hidden="true"></span>녹화 시작
+      </button>
+      <button id="btn-stop" class="btn big stop" type="button" disabled>
+        <span class="ico stop-ico" aria-hidden="true"></span>정지
+      </button>
+    </div>
+    <p id="message" class="message" role="status" aria-live="polite"></p>
+  </section>
+
+  <section aria-labelledby="cams-title">
+    <div class="section-head">
+      <h2 id="cams-title">카메라</h2>
+      <span id="cams-count" class="muted"></span>
+    </div>
+    <div id="cams" class="cams"></div>
+  </section>
+
+  <section id="uploads-wrap" aria-labelledby="up-title" hidden>
+    <div class="section-head"><h2 id="up-title">PC 로 받는 중</h2></div>
+    <div id="uploads" class="panel"></div>
+  </section>
+
+  <section id="result-wrap" aria-labelledby="res-title" hidden>
+    <div class="section-head"><h2 id="res-title">방금 찍은 촬영</h2></div>
+    <div id="result" class="panel"></div>
+  </section>
+
+  <section id="job-wrap" aria-labelledby="job-title" hidden>
+    <div class="section-head"><h2 id="job-title">3D 만들기</h2></div>
+    <div id="job" class="panel"></div>
+  </section>
+
+  <section aria-labelledby="ses-title">
+    <div class="section-head">
+      <h2 id="ses-title">촬영 목록</h2>
+      <span class="muted">uploads 폴더</span>
+    </div>
+    <div id="sessions" class="panel sessions"></div>
+  </section>
+
+  <section>
+    <details class="panel logbox">
+      <summary>마스터 기록 (자세한 로그)</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+</main>
+
+<footer class="foot">
+  이 화면은 이 PC 에서만 열립니다 · 폰 연결 포트 <span id="port">9001</span>
+</footer>
+
+<div id="bye" class="bye" hidden>
+  <div>
+    <h2>마스터를 껐습니다</h2>
+    <p>이 창은 닫아도 됩니다. 다시 쓰려면 바탕화면의 <b>MocapSync 마스터</b> 아이콘을 누르세요.</p>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

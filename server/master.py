@@ -19,9 +19,18 @@ MocapSync PC 테스트 마스터.
 
 야외 촬영에서는 폰 마스터를 씁니다. 규약이 같으므로 구현만 두 곳에 있는 것입니다.
 
+대시보드 (2026-09-28)
+--------------------
+켜면 브라우저에 http://127.0.0.1:8765/ 가 열립니다 (이 PC 에서만). 폰 카드, 녹화 시작·정지,
+업로드 진행률, 촬영 목록과 "3D 만들기"(tools/run_session.py 를 별도 프로세스로).
+바탕화면 아이콘: tools/make_shortcut.ps1. 이미 켜져 있으면 새로 켜지 않고 대시보드만 엽니다.
+화면 코드: server/webui/, 서버: mocapsync/webui.py (보안 규칙은 그 파일 설명 참고).
+
 사용법
 ------
-  python server/master.py                       # 광고 + 대기
+  python server/master.py                       # 광고 + 대기 + 대시보드
+  python server/master.py --no-browser          # 브라우저 자동 열기 끔
+  python server/master.py --no-ui               # 예전처럼 콘솔만
   python server/master.py --port 9001
   python server/master.py --no-mdns             # mDNS 없이 (IP 직접 입력용)
   python server/master.py --auto-start 5        # 접속 5초 후 자동으로 예약 시작 지시
@@ -32,29 +41,44 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import os
 import socket
 import sys
+import time
 import uuid
+import webbrowser
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mocapsync import clocksync as cs  # noqa: E402
+from mocapsync import jobs as J  # noqa: E402
+from mocapsync import pipeline as PL  # noqa: E402
 from mocapsync import protocol as P  # noqa: E402
+from mocapsync import sessions_index as SI  # noqa: E402
 from mocapsync import sidecar  # noqa: E402
+from mocapsync import webui as W  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
-LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+REPO = Path(__file__).resolve().parent.parent
+LOG_DIR = REPO / "logs"
+WEBUI_DIR = Path(__file__).resolve().parent / "webui"
+DEFAULT_UI_PORT = 8765
+
+#: 대시보드의 "기록" 칸이 보여줄 최근 로그 줄
+LOG_RING: deque[str] = deque(maxlen=300)
 
 
 def log(msg: str, *, fh=None) -> None:
     line = f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]}  {msg}"
     print(line, flush=True)
+    LOG_RING.append(line)
     if fh:
         fh.write(line + "\n")
         fh.flush()
@@ -106,6 +130,11 @@ class Slave:
         self.ack_futures: dict[str, asyncio.Future] = {}
         #: 세션별 record_done 대기
         self.done_futures: dict[str, asyncio.Future] = {}
+        # ── 대시보드 표시용 (status 메시지에서) ──────────────────────────────
+        self.battery: float | None = None
+        self.thermal: str | None = None
+        self.frames_captured = 0
+        self.connected_at = time.time()
 
     def label(self) -> str:
         return f"{self.name}({self.device_id[:8]}) {self.model} {self.platform} {self.os_version}"
@@ -140,6 +169,21 @@ class Master:
         # 업로드 받을 곳. 4단계 파이프라인이 여기를 입력으로 씁니다.
         self.upload_root = Path(__file__).resolve().parent.parent / "uploads"
         self.upload_root.mkdir(parents=True, exist_ok=True)
+        # ── 대시보드용 상태 ─────────────────────────────────────────────────
+        #: idle / starting / recording / stopping
+        self.phase = "idle"
+        #: 예약 시작 시각 (벽시계, 초). 녹화 경과 시간 표시용
+        self.recording_started_at: float | None = None
+        #: 받는 중인 파일들 {(peer, 파일): {...}}
+        self.uploads: dict[tuple[str, str], dict] = {}
+        #: 마지막으로 끝난 촬영의 요약 (sessions_index.summarize_session)
+        self.last_result: dict | None = None
+        #: 마지막 조작 결과 문장
+        self.last_message: dict | None = None
+        self.command_task: asyncio.Task | None = None
+        self.shutdown_event = asyncio.Event()
+        self.index: SI.SessionIndex | None = None
+        self.jobs: J.JobRunner | None = None
 
     # ── 연결 처리 ────────────────────────────────────────────────────────────
     async def handle(self, reader: asyncio.StreamReader,
@@ -278,6 +322,11 @@ class Master:
 
                 if t == P.T.STATUS:
                     sl.state = str(msg.get("state", "?"))
+                    b = msg.get("battery")
+                    # 폰이 배터리 감시를 안 켜면 -1 을 보냅니다 (빌드 24 에서 고침)
+                    sl.battery = float(b) if isinstance(b, (int, float)) and b >= 0 else None
+                    sl.thermal = msg.get("thermal") or sl.thermal
+                    sl.frames_captured = int(msg.get("framesCaptured") or 0)
                     extras = []
                     if "battery" in msg:
                         extras.append(f"배터리 {msg['battery'] * 100:.0f}%")
@@ -368,12 +417,17 @@ class Master:
 
         t0 = P.now_ns()
         got = 0
+        prog = {"camera": sl.name, "deviceId": sl.device_id, "file": safe,
+                "session": safe_session, "got": 0, "size": size}
+        key = (sl.peer, safe)
+        self.uploads[key] = prog
         try:
             with open(tmp, "wb") as f:
                 while got < size:
                     chunk = await reader.readexactly(min(256 * 1024, size - got))
                     f.write(chunk)
                     got += len(chunk)
+                    prog["got"] = got
         except asyncio.IncompleteReadError as e:
             got += len(e.partial)
             log(f"    ★ 업로드 중단: {got}/{size} 바이트", fh=self.fh)
@@ -383,6 +437,8 @@ class Master:
             log(f"    ★ 업로드 실패: {e}", fh=self.fh)
             tmp.unlink(missing_ok=True)
             return
+        finally:
+            self.uploads.pop(key, None)
 
         tmp.replace(dest)
         dt = (P.now_ns() - t0) / 1e9
@@ -558,13 +614,134 @@ class Master:
 
     async def run_command(self, cmd: str, msg: dict | None = None) -> tuple[bool, str, str | None]:
         msg = msg or {}
-        if cmd == "start":
-            return await self.start_recording(int(msg.get("leadMs", self.DEFAULT_LEAD_MS)))
-        if cmd == "stop":
-            return await self.stop_recording(float(msg.get("timeoutS", 900)))
         if cmd == "list":
             return True, self.list_text(), self.current_session
-        return False, f"모르는 명령: {cmd!r} (start / stop / list)", None
+        if cmd not in ("start", "stop"):
+            return False, f"모르는 명령: {cmd!r} (start / stop / list)", None
+        self.phase = "starting" if cmd == "start" else "stopping"
+        try:
+            if cmd == "start":
+                r = await self.start_recording(int(msg.get("leadMs", self.DEFAULT_LEAD_MS)))
+            else:
+                r = await self.stop_recording(float(msg.get("timeoutS", 900)))
+        finally:
+            self.phase = "recording" if self.current_session else "idle"
+        self.last_message = {"ok": r[0], "text": r[1], "cmd": cmd, "at": time.time()}
+        return r
+
+    # ── 대시보드 ────────────────────────────────────────────────────────────
+
+    def camera_state(self, s: Slave) -> dict:
+        est = s.estimate or {}
+        age = s.sync_age_s()
+        return {
+            "name": s.name, "deviceId": s.device_id, "model": s.model,
+            "os": s.os_version, "app": s.app_version, "peer": s.peer,
+            "state": s.state, "remote": s.is_remote,
+            "syncPending": s.sync_pending,
+            "syncAgeS": None if age == float("inf") else round(age, 1),
+            "uncertaintyMs": round(est["uncertaintyNs"] / cs.NS_PER_MS, 3)
+            if est.get("uncertaintyNs") else None,
+            "minRttMs": round(est["minRttNs"] / cs.NS_PER_MS, 3) if est.get("minRttNs") else None,
+            "battery": s.battery, "thermal": s.thermal,
+            "frames": s.frames_captured,
+        }
+
+    def dashboard_state(self) -> dict:
+        """대시보드가 1초마다 읽는 화면 상태."""
+        cams = [s for s in self.slaves.values() if not s.is_ctl and s.device_id != "?"]
+        remote = [s for s in cams if s.is_remote]
+        ready = [s for s in remote if s.state == P.RemoteState.READY]
+        busy = self.command_task is not None and not self.command_task.done()
+        elapsed = None
+        if self.recording_started_at is not None:
+            elapsed = max(0.0, time.time() - self.recording_started_at)
+        ips = local_ips()
+        return {
+            "server": {"ips": ips, "port": self.port,
+                       "addr": f"{ips[0]}:{self.port}" if ips else None,
+                       "resyncS": self.RESYNC_INTERVAL_S},
+            "phase": self.phase,
+            "busy": busy,
+            "session": self.current_session,
+            "recordingS": round(elapsed, 1) if elapsed is not None else None,
+            "cameras": [self.camera_state(s) for s in
+                        sorted(cams, key=lambda s: (not s.is_remote, s.device_id))],
+            "remoteCount": len(remote),
+            "readyCount": len(ready),
+            "canStart": bool(ready) and not self.current_session and not busy,
+            "canStop": bool(self.current_session) and not busy,
+            "uploads": list(self.uploads.values()),
+            "lastResult": self.last_result,
+            "lastMessage": self.last_message,
+            "job": self.jobs.snapshot() if self.jobs else None,
+            "log": list(LOG_RING)[-80:],
+        }
+
+    def _spawn_command(self, cmd: str, body: dict) -> tuple[int, dict]:
+        """조작은 오래 걸릴 수 있어(정지 = 업로드까지 기다림) 백그라운드로 돌립니다."""
+        if self.command_task is not None and not self.command_task.done():
+            return 409, {"ok": False, "message": "앞의 조작이 아직 끝나지 않았습니다"}
+        self.command_task = asyncio.get_running_loop().create_task(self.run_command(cmd, body))
+        return 202, {"ok": True, "message": "보냈습니다"}
+
+    async def ui_start(self, body: dict) -> tuple[int, dict]:
+        st = self.dashboard_state()
+        if not st["canStart"]:
+            why = ("이미 녹화 중입니다" if self.current_session else
+                   "대기 중인 폰이 없습니다. 폰에서 'PC 원격 대기 켜기'를 누르세요.")
+            return 409, {"ok": False, "message": why}
+        return self._spawn_command("start", {"leadMs": self.DEFAULT_LEAD_MS})
+
+    async def ui_stop(self, body: dict) -> tuple[int, dict]:
+        if not self.current_session:
+            return 409, {"ok": False, "message": "녹화 중이 아닙니다"}
+        return self._spawn_command("stop", {"timeoutS": 900})
+
+    async def ui_make3d(self, body: dict) -> tuple[int, dict]:
+        sid = str(body.get("sid", ""))
+        if not SI.is_safe_sid(sid) or not (self.upload_root / sid).is_dir():
+            return 404, {"ok": False, "message": "그런 촬영이 없습니다"}
+        if self.current_session:
+            return 409, {"ok": False, "message": "녹화 중에는 3D 를 만들지 않습니다 (GPU·WiFi 부담)"}
+        if self.jobs is None:
+            return 409, {"ok": False, "message": "3D 만들기를 쓸 수 없습니다"}
+        ok, text = self.jobs.start(sid)
+        log(("▶ " if ok else "★ ") + text, fh=self.fh)
+        return (202 if ok else 409), {"ok": ok, "message": text}
+
+    async def ui_open(self, body: dict) -> tuple[int, dict]:
+        """탐색기로 폴더를 엽니다. 이 PC 에서만 불리므로 편의 기능입니다."""
+        sid = str(body.get("sid", ""))
+        what = str(body.get("what", "uploads"))
+        if not SI.is_safe_sid(sid):
+            return 404, {"ok": False, "message": "그런 촬영이 없습니다"}
+        if what == "uploads":
+            d = self.upload_root / sid
+        elif what == "project" and self.index is not None:
+            d = self.index.project_dir(sid)
+            if (d / "pose-3d").is_dir():
+                d = d / "pose-3d"
+        else:
+            return 400, {"ok": False, "message": "모르는 폴더"}
+        if not d.is_dir():
+            return 404, {"ok": False, "message": f"폴더가 아직 없습니다: {d}"}
+        if not hasattr(os, "startfile"):
+            return 409, {"ok": False, "message": f"여기서는 폴더를 열 수 없습니다: {d}"}
+        os.startfile(str(d))  # noqa: S606 — 검증된 고정 경로만
+        return 200, {"ok": True, "message": str(d)}
+
+    async def ui_quit(self, body: dict) -> tuple[int, dict]:
+        if self.current_session:
+            return 409, {"ok": False, "message": "녹화 중에는 끌 수 없습니다. 먼저 정지하세요."}
+        if self.jobs and self.jobs.running:
+            return 409, {"ok": False, "message": "3D 만들기가 도는 중입니다. 끝난 뒤에 끄세요."}
+        log("대시보드에서 종료를 눌렀습니다", fh=self.fh)
+        asyncio.get_running_loop().call_later(0.3, self.shutdown_event.set)
+        return 200, {"ok": True, "message": "마스터를 끕니다"}
+
+    def ui_sessions(self) -> dict:
+        return {"sessions": self.index.list() if self.index else []}
 
     async def start_recording(self, lead_ms: int) -> tuple[bool, str, str | None]:
         """
@@ -599,6 +776,7 @@ class Master:
         # 2) 예약
         sid = f"S{datetime.now():%Y%m%d-%H%M%S}"
         start_at = P.now_ns() + lead_ms * cs.NS_PER_MS
+        self.recording_started_at = time.time() + lead_ms / 1000
         loop = asyncio.get_running_loop()
         for s in cams:
             s.ack_futures[sid] = loop.create_future()
@@ -628,8 +806,10 @@ class Master:
         if not acked:
             self.current_session = None
             self.session_cameras = []
+            self.recording_started_at = None
             return False, "\n".join(lines), sid
         self.session_cameras = acked
+        self.phase = "recording"
         log("  " + "\n  ".join(lines), fh=self.fh)
         return True, "\n".join(lines), sid
 
@@ -656,11 +836,16 @@ class Master:
 
         self.current_session = None
         self.session_cameras = []
+        self.recording_started_at = None
         report = self._session_report(sid)
         missing = [s.name for s, r in done if r is None]
         head = f"{sid}: {len(done) - len(missing)}/{len(cams)}대 업로드 완료"
         if missing:
             head += f"  (★ 못 받음: {', '.join(missing)})"
+        with contextlib.suppress(Exception):
+            self.last_result = SI.summarize_session(self.upload_root / sid)
+            self.last_result["missing"] = missing
+            self.last_result["expected"] = len(cams)
         return not missing, head + "\n" + report, sid
 
     def _session_report(self, sid: str) -> str:
@@ -712,8 +897,9 @@ class Master:
         log("", fh=self.fh)
         return "\n".join(lines)
 
-    async def run(self) -> None:
-        server = await asyncio.start_server(self.handle, "0.0.0.0", self.port)
+    async def run(self, server=None) -> None:
+        if server is None:
+            server = await asyncio.start_server(self.handle, "0.0.0.0", self.port)
         addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
         log(f"TCP 대기: {addrs}", fh=self.fh)
         resync = asyncio.create_task(self.resync_loop())
@@ -877,6 +1063,47 @@ async def main_async(args) -> int:
     log("=" * 70, fh=fh)
 
     m = Master(args.port, args.auto_start, fh)
+    ui_url = f"http://127.0.0.1:{args.ui_port}/"
+
+    # ★ 폰 포트를 먼저 잡습니다. 이미 다른 마스터가 켜져 있으면 여기서 알 수 있습니다.
+    #   (2026-09-27: 사용자가 켜 둔 창이 있는 줄 모르고 하나 더 켰다가 긴 오류만 찍혔습니다)
+    #   바탕화면 아이콘을 두 번 눌러도 새로 켜지 않고 켜진 대시보드를 엽니다.
+    try:
+        server = await asyncio.start_server(m.handle, "0.0.0.0", args.port)
+    except OSError as e:
+        if e.errno in (10048, 98, 48):
+            log(f"★ 포트 {args.port} 을 이미 다른 마스터가 쓰고 있습니다. 마스터는 하나만 켭니다.",
+                fh=fh)
+            if not args.no_ui and not args.no_browser:
+                webbrowser.open(ui_url)
+                log(f"  이미 켜진 대시보드를 열었습니다: {ui_url}", fh=fh)
+            log("  새로 켜려면 먼저 떠 있는 마스터 창을 닫으세요.", fh=fh)
+            fh.close()
+            return 3
+        raise
+
+    if not args.no_ui:
+        m.index = SI.SessionIndex(m.upload_root, PL.DEFAULT_WORK_ROOT)
+        m.jobs = J.JobRunner(J.find_pose_python(), REPO / "tools" / "run_session.py",
+                             PL.DEFAULT_WORK_ROOT)
+        ui = W.WebUI(WEBUI_DIR, m.dashboard_state,
+                     getters={"sessions": m.ui_sessions},
+                     actions={"start": m.ui_start, "stop": m.ui_stop, "make3d": m.ui_make3d,
+                              "open": m.ui_open, "quit": m.ui_quit},
+                     port=args.ui_port)
+        try:
+            await ui.start()
+        except OSError as e:
+            log(f"★ 대시보드를 열지 못했습니다 (포트 {args.ui_port}: {e}). "
+                "폰 연결과 콘솔 조작은 그대로 됩니다.", fh=fh)
+            ui = None
+        else:
+            log(f"대시보드: {ui.url}   (이 PC 에서만 열립니다)", fh=fh)
+            if not args.no_browser:
+                webbrowser.open(ui.url)
+    else:
+        ui = None
+
     aiozc, info = (None, None)
     if not args.no_mdns:
         try:
@@ -908,11 +1135,21 @@ async def main_async(args) -> int:
     else:
         log("콘솔 입력 없음 — 조작은  python server/ctl.py start | stop | list", fh=fh)
 
+    serve = asyncio.create_task(m.run(server))
+    quit_wait = asyncio.create_task(m.shutdown_event.wait())
     try:
-        await m.run()
+        done, _ = await asyncio.wait({serve, quit_wait}, return_when=asyncio.FIRST_COMPLETED)
+        if serve in done:
+            serve.result()      # 예외가 있으면 여기서 드러납니다
     except asyncio.CancelledError:
         pass
     finally:
+        for t in (serve, quit_wait):
+            t.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await serve
+        if ui is not None:
+            await ui.close()
         watcher.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await watcher
@@ -931,6 +1168,10 @@ def main() -> int:
     ap.add_argument("--no-mdns", action="store_true", help="mDNS 광고 생략")
     ap.add_argument("--auto-start", type=float, default=None,
                     metavar="초", help="접속 N초 후 예약 시작을 자동 지시 (테스트용)")
+    ap.add_argument("--ui-port", type=int, default=DEFAULT_UI_PORT,
+                    help=f"대시보드 포트 (기본 {DEFAULT_UI_PORT}, 이 PC 에서만)")
+    ap.add_argument("--no-ui", action="store_true", help="대시보드 없이 (예전 콘솔만)")
+    ap.add_argument("--no-browser", action="store_true", help="브라우저를 자동으로 열지 않음")
     args = ap.parse_args()
     try:
         return asyncio.run(main_async(args))

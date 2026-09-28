@@ -10,6 +10,11 @@ struct MocapSyncApp: App {
         // 시계 연속성 유지에도 필요합니다. (docs/PROTOCOL.md §1)
         UIApplication.shared.isIdleTimerDisabled = true
 
+        // ★ 이걸 켜지 않으면 UIDevice.batteryLevel 이 항상 -1 입니다.
+        //   2026-09-27 첫 2대 원격 촬영에서 PC 에 "배터리 -100%" 로 찍혔습니다.
+        //   진단 화면만 켜고 있어서, 진단을 안 열면 status·사이드카에 -1 이 갔습니다.
+        UIDevice.current.isBatteryMonitoringEnabled = true
+
         AppLog.shared.i("App", "앱 시작 v\(BuildInfo.versionFull)")
         AppLog.shared.i("App", "기기 \(BuildInfo.deviceModelIdentifier) / iOS \(BuildInfo.osVersion)")
         AppLog.shared.i("App", "시계 \(MonotonicClock.name) = \(MonotonicClock.nowNs()) ns")
